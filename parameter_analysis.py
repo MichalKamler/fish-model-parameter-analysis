@@ -15,13 +15,20 @@ LAM0 = 1.0
 LAM1_LR = 0.08
 LAM1_UD = 0.08
 
+SIM_RATE = 30 #Hz
+
 # PHI_SIZE = 1024
 PHI_SIZE = 256
 THETA_SIZE = 128
 
-GAM = 0.1
-V0 = 1.0
-R = 1.0
+GAM = 0.1 #relaxation rate
+V0 = 1.0 #prefered vel
+R = 1.0 #radius of drone 
+
+N_DRONES = 10
+SIM_TIME = 600.0 #s
+SIM_START_COLLECT_DATA = 200.0 #s 
+SPAWN_DIST = 5 #m
 
 PI = math.pi
 PI_2 = PI / 2
@@ -29,7 +36,7 @@ PI_2 = PI / 2
 class drone: 
     def __init__(self, x: float, y: float, z: float, psi: float =None, 
                     PHI_SIZE: int =PHI_SIZE, THETA_SIZE: int =THETA_SIZE,
-                    GAM: float =GAM, V0: float =V0, R: float =R,
+                    GAM: float =GAM, V0: float =V0, R: float =R, SIM_RATE: int=SIM_RATE,
                     ALP0: float =ALP0, ALP1_LR: float =ALP1_LR, ALP1_UD: float =ALP1_UD, 
                     BET0: float =BET0, BET1_LR: float =BET1_LR, BET1_UD: float =BET1_UD, 
                     LAM0: float =LAM0, LAM1_LR: float =LAM1_LR, LAM1_UD: float =LAM1_UD) -> None:
@@ -43,26 +50,38 @@ class drone:
 
         self.GAM, self.V0, self.R = GAM, V0, R
 
+        self.SIM_RATE = SIM_RATE
+        self.d_t = 1/SIM_RATE
+
         self.ALP0, self.ALP1_LR, self.ALP1_UD = ALP0, ALP1_LR, ALP1_UD
         self.BET0, self.BET1_LR, self.BET1_UD = BET0, BET1_LR, BET1_UD
         self.LAM0, self.LAM1_LR, self.LAM1_UD = LAM0, LAM1_LR, LAM1_UD
 
         self.V = VisualField(PHI_SIZE, THETA_SIZE) 
 
-        if psi==None: #phi is direction of velocity in global coords
+        if psi==None: #psi is direction of velocity in global coords
             self.psi = 0.0
         else:
             self.psi = psi
         self.velocity = np.array([0.0, 0.0, 0.0]) #vx, vy, vz in global coords
+        self.velocity_norm = 0.0
 
     def computeStateVariables():
-        
-
-    def updateVelocity():
         pass
 
-    def updatePositon():
-        pass
+    def updateVelocity(self, dvel: float, dpsi: float, dvz: float) -> None:
+        self.velocity_norm += dvel * self.d_t
+        self.psi += dpsi * self.d_t
+        self.velocity[0] = self.velocity_norm * np.cos(self.psi)
+        self.velocity[1] = self.velocity_norm * np.sin(self.psi)
+        self.velocity[2] += dvz * self.d_t
+        return
+
+    def updatePositon(self) -> None:
+        self.x += self.velocity[0] * self.d_t
+        self.y += self.velocity[1] * self.d_t
+        self.z += self.velocity[2] * self.d_t
+        return
 
     def setZeroVisualField(self) -> None:
         self.V.setZero()
@@ -85,7 +104,15 @@ class drone:
         return
 
         
-
+class simulation:
+    def __init__(self, SIM_RATE: int, N_DRONES: int =N_DRONES, SIM_TIME: float =SIM_TIME, SIM_START_COLLECT_DATA: float =SIM_START_COLLECT_DATA) -> None:
+        self.SIM_RATE = SIM_RATE
+        self.N_DRONES = N_DRONES
+        self.SIM_TIME = SIM_TIME
+        self.SIM_START_COLLECT_DATA = SIM_START_COLLECT_DATA
+    
+    def spawn_drones(self, n_drones) -> None:
+    
 
 class VisualField: 
     """
@@ -284,5 +311,10 @@ if __name__ == "__main__":
     V = VisualField(PHI_SIZE, THETA_SIZE)
     V.setSphereCap(0, -PI_2, PI/4)
     V.plotVisualField()
+
+    drone1 = drone(0, 0, 0)
+    for i in range(30):
+        drone1.updateVelocity(1, 0, 0)
+        print("time: ", i*1/30, "position: ", drone1.velocity[0], drone1.velocity[1], drone1.velocity[2])
 
 
