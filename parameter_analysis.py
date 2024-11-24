@@ -1,6 +1,9 @@
 import numpy as np
+import numpy.typing as npt
+import random
 import math
 import logging as log
+import time
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -15,7 +18,7 @@ LAM0 = 1.0
 LAM1_LR = 0.08
 LAM1_UD = 0.08
 
-SIM_RATE = 30 #Hz
+SIM_RATE = 10 #Hz
 
 # PHI_SIZE = 1024
 PHI_SIZE = 256
@@ -59,6 +62,14 @@ class drone:
 
         self.V = VisualField(PHI_SIZE, THETA_SIZE) 
 
+        phi_lin_spaced = np.linspace(-np.pi, np.pi, PHI_SIZE)
+        theta_lin_spaced = np.linspace(-np.pi / 2, np.pi / 2, THETA_SIZE)
+
+        self.cos_phi = np.cos(phi_lin_spaced)
+        self.sin_phi = np.sin(phi_lin_spaced)
+        self.cos_theta = np.cos(theta_lin_spaced)
+        self.sin_theta = np.sin(theta_lin_spaced)
+
         if psi==None: #psi is direction of velocity in global coords
             self.psi = 0.0
         else:
@@ -66,8 +77,66 @@ class drone:
         self.velocity = np.array([0.0, 0.0, 0.0]) #vx, vy, vz in global coords
         self.velocity_norm = 0.0
 
-    def computeStateVariables():
-        pass
+    def dPhi_V_of(self, V: npt.ArrayLike) -> npt.ArrayLike:
+        # circular padding for edge cases
+        padV = np.pad(V, (1, 1), 'wrap')
+        dPhi_V_raw = np.diff(padV)
+
+        # we want to include non-zero value if it is on the edge
+        if dPhi_V_raw[0] > 0 and dPhi_V_raw[-1] > 0:
+            dPhi_V_raw = dPhi_V_raw[0:-1]
+
+        else:
+            dPhi_V_raw = dPhi_V_raw[1:, ...]
+
+        dPhi_V = dPhi_V_raw
+        return dPhi_V
+    
+    def dTheta_V_of(self, row_idx: int) -> npt.ArrayLike:
+        dTheta_V = np.zeros(self.PHI_SIZE)
+        if row_idx<=0 or row_idx>=self.PHI_SIZE:
+            return dTheta_V
+        
+        for col_idx in range(self.PHI_SIZE):
+            dTheta_V[col_idx] = self.V[row_idx, col_idx] - self.V[row_idx-1, col_idx]
+        return dTheta_V
+
+    def compute_state_variables_3d(self):
+        v_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        psi_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
+
+        for i in range(self.THETA_SIZE):
+            angle_z_to_theta = np.pi - i * (np.pi / (self.THETA_SIZE - 1))
+            V_row = self.V.field[i, :].astype(float)
+            dPhi_V = self.dPhi_V_of(V_row)
+            dTheta_V = self.dTheta_V_of(i)
+
+            G = -V_row
+            G_spike = dPhi_V**2
+
+            integrand_dvel = G * self.cos_phi
+            integrand_dpsi = G * self.sin_phi
+
+            integral_dvel = self.d_phi * (0.5 * integrand_dvel[0] + integrand_dvel[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dvel[self.PHI_SIZE - 1])
+            integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
+            integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
+
+            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
+            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
+            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (dTheta_V**2).sum()) * np.sin(angle_z_to_theta)
+
+        v_integral_by_dphi *= self.cos_theta
+        psi_integral_by_dphi *= self.cos_theta
+        v_z_integral_by_dphi *= self.sin_theta
+
+        dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_integral_by_dphi[self.THETA_SIZE - 1])
+        dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * psi_integral_by_dphi[self.THETA_SIZE - 1])
+        dv_z = self.d_theta * (0.5 * v_z_integral_by_dphi[0] + v_z_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_z_integral_by_dphi[self.THETA_SIZE - 1])
+
+        dvel += self.GAM * (self.V0 - self.velocity_norm)
+
+        return dvel, dpsi, dv_z
 
     def updateVelocity(self, dvel: float, dpsi: float, dvz: float) -> None:
         self.velocity_norm += dvel * self.d_t
@@ -105,13 +174,119 @@ class drone:
 
         
 class simulation:
-    def __init__(self, SIM_RATE: int, N_DRONES: int =N_DRONES, SIM_TIME: float =SIM_TIME, SIM_START_COLLECT_DATA: float =SIM_START_COLLECT_DATA) -> None:
+    def __init__(self, SIM_RATE: int, N_DRONES: int =N_DRONES, SIM_TIME: float =SIM_TIME, SIM_START_COLLECT_DATA: float =SIM_START_COLLECT_DATA, SHOW: bool =False) -> None:
         self.SIM_RATE = SIM_RATE
         self.N_DRONES = N_DRONES
         self.SIM_TIME = SIM_TIME
         self.SIM_START_COLLECT_DATA = SIM_START_COLLECT_DATA
+        self.SHOW = SHOW
+        self.drones = self.spawn_drones(n_drones=N_DRONES)
+        self.minDist = float('inf')
+        self.avgMinDist = 0
+        self.cntMinDist = 0
     
-    def spawn_drones(self, n_drones) -> None:
+    def spawn_drones(self, n_drones) -> list:
+        drones_list = []
+        for i in range(n_drones):
+            x = i*3
+            y = random.uniform(-3, 3)
+            z = random.uniform(0, 5)
+            drones_list.append(drone(x, y, z, 0, 
+                    PHI_SIZE, THETA_SIZE,
+                    GAM, V0, R, SIM_RATE,
+                    ALP0, ALP1_LR, ALP1_UD, 
+                    BET0, BET1_LR, BET1_UD, 
+                    LAM0, LAM1_LR, LAM1_UD))
+
+        return drones_list
+    
+    def getDronesPositions(self):
+        x = np.zeros(self.N_DRONES)
+        y = np.zeros(self.N_DRONES)
+        z = np.zeros(self.N_DRONES)
+
+        for i, drone in enumerate(self.drones):
+            x[i] = drone.x
+            y[i] = drone.y
+            z[i] = drone.z
+        return x, y, z
+    
+    def startPlotDrones(self):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        x, y, z = self.getDronesPositions()
+        self.sc = ax.scatter(x, y, z, c='blue', marker='o')
+        ax.set_xlim([-10, 10])
+        ax.set_ylim([-10, 10])
+        ax.set_zlim([-10, 10])
+
+        plt.ion()  # Turn on interactive mode
+        plt.show()
+    
+    def updatePlotDrones(self):
+        x, y, z = self.getDronesPositions()
+        self.sc._offsets3d = (x, y, z)
+        plt.pause(0.1) 
+    
+    def updateVFieldForDrones(self):
+        x, y, z = self.getDronesPositions()
+        for drone in self.drones:
+            drone.setZeroVisualField()
+            x_i, y_i, z_i = drone.x, drone.y, drone.z
+
+            for j in range(self.N_DRONES):
+                if x[j]!=x_i and y[j]!=y_i and z[j]!=z_i:
+                    drone.updateVFieldBasedOnDroneCoords(x[j], y[j], z[j])
+    
+    def updateDronesPosition(self):
+        for drone in self.drones:
+            drone.updatePositon()
+
+    def updateDronesStateVar(self):
+        for drone in self.drones:
+            dvel, dpsi, dv_z = drone.compute_state_variables_3d()
+            drone.updateVelocity(dvel, dpsi, dv_z)
+
+    def getMinDistInfo(self):
+        x, y, z = self.getDronesPositions()
+        n = len(x)
+
+        min_distances = np.array([])
+
+        now_observed_min_dist = float('inf')
+
+        for i in range(n):
+            min_dist = float('inf')  # Start with a large number
+            for j in range(n):
+                if i != j:  # Skip the same point
+                    dist = math.sqrt((x[i] - x[j])**2 + (y[i] - y[j])**2 + (z[i] - z[j])**2)
+                    min_dist = min(min_dist, dist)
+            now_observed_min_dist = min(now_observed_min_dist, min_dist)
+            min_distances.append(min_dist)
+        self.minDist = min(self.minDist, now_observed_min_dist)
+        self.avgMinDist = (self.avgMinDist*self.cntMinDist + min_distances.sum())/(self.cntMinDist+n)
+
+
+    def simulate(self):
+        dt = 1/self.SIM_RATE
+        t = 0
+        if self.SHOW:
+            self.startPlotDrones()
+        while t<self.SIM_TIME:
+            t += dt
+
+            self.updateVFieldForDrones()
+            self.updateDronesStateVar()
+            self.updateDronesPosition()
+
+            if self.SHOW:
+                self.updatePlotDrones()
+            if t>=self.SIM_START_COLLECT_DATA:
+                self.getMinDistInfo()
+        print(self.minDist, self.avgMinDist)
+                
+                
+
     
 
 class VisualField: 
@@ -125,6 +300,12 @@ class VisualField:
         self.phi_size = phi_size #cols
         self.d_phi = 2*PI/phi_size
         self.d_theta = PI/theta_size
+    
+    def __getitem__(self, indices):
+        return self.field[indices]  
+
+    def __setitem__(self, indices, value):
+        self.field[indices] = value  
 
     def setZero(self) -> None:
         self.field.fill(0)
@@ -224,15 +405,16 @@ class VisualField:
         """
         helper function for setSphereCap
         """
-        for row in range(row_start, row_end):
-                for col in range(col_start, col_end):
-                    phi = self.colToPhi(col)
-                    theta  =self.rowToTheta(row)
-                    x, y, z = self.sphericalToCartesian(self.phiShift(phi), self.thetaShift(theta))
-                    dot_product = x*x_c + y*y_c + z*z_c
-                    distance = np.acos(dot_product)
-                    if distance <= alpha:
-                        self.field[row, col] = 1
+        self.field[row_start:row_end, col_start:col_end] = 1
+        # for row in range(row_start, row_end):
+        #         for col in range(col_start, col_end):
+        #             phi = self.colToPhi(col)
+        #             theta  =self.rowToTheta(row)
+        #             x, y, z = self.sphericalToCartesian(self.phiShift(phi), self.thetaShift(theta))
+        #             dot_product = x*x_c + y*y_c + z*z_c
+        #             distance = np.acos(dot_product)
+        #             if distance <= alpha:
+        #                 self.field[row, col] = 1
         return
 
     def setSphereCap(self, phi_center: float, theta_center: float, alpha: float) -> None: #TESTED
@@ -307,14 +489,16 @@ class VisualField:
 
 
 if __name__ == "__main__":
-    log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    V = VisualField(PHI_SIZE, THETA_SIZE)
-    V.setSphereCap(0, -PI_2, PI/4)
-    V.plotVisualField()
+    # log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    # V = VisualField(PHI_SIZE, THETA_SIZE)
+    # V.setSphereCap(0, -PI_2, PI/4)
+    # V.plotVisualField()
 
-    drone1 = drone(0, 0, 0)
-    for i in range(30):
-        drone1.updateVelocity(1, 0, 0)
-        print("time: ", i*1/30, "position: ", drone1.velocity[0], drone1.velocity[1], drone1.velocity[2])
+    # drone1 = drone(0, 0, 0)
+    # for i in range(30):
+    #     drone1.updateVelocity(1, 0, 0)
+    #     print("time: ", i*1/30, "position: ", drone1.velocity[0], drone1.velocity[1], drone1.velocity[2])
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True)
+    sim.simulate()
 
 
