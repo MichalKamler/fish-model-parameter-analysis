@@ -4,21 +4,38 @@ import random
 import math
 import logging as log
 import time
+import itertools
+from tqdm import tqdm
+import csv
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+
+            # v_integral_by_dphi[i] = self.ALP0 * integral_dvel * np.sin(angle_z_to_theta) #only the -V part for testing
+            # psi_integral_by_dphi[i] = self.BET0 * integral_dpsi * np.sin(angle_z_to_theta)
+            # v_z_integral_by_dphi[i] = self.LAM0 * integral_dv_z* np.sin(angle_z_to_theta)
+
+            # v_integral_by_dphi[i] = self.ALP0 * (self.ALP1_LR * (self.cos_phi * G_spike).sum()) * np.sin(angle_z_to_theta) #onlu The LR part for testing
+            # psi_integral_by_dphi[i] = self.BET0 * (self.BET1_LR * (self.sin_phi * G_spike).sum()) * np.sin(angle_z_to_theta)
+            # v_z_integral_by_dphi[i] = self.LAM0 * (self.LAM1_LR * G_spike.sum()) * np.sin(angle_z_to_theta)
+
+            # v_integral_by_dphi[i] = self.ALP0 * (self.ALP1_UD * (self.cos_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta) #only the UD part for testing
+            # psi_integral_by_dphi[i] = self.BET0 * (self.BET1_UD * (self.sin_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
+            # v_z_integral_by_dphi[i] = self.LAM0 * (self.LAM1_UD * (dTheta_V**2).sum()) * np.sin(angle_z_to_theta)
+
+
 ALP0 = 1.0
 ALP1_LR = 0.08
-ALP1_UD = 0.08
+ALP1_UD = 0.
 BET0 = 0.5
 BET1_LR = 0.08
-BET1_UD = 0.08
+BET1_UD = 0.
 LAM0 = 1.0
 LAM1_LR = 0.08
 LAM1_UD = 0.08
 
-SIM_RATE = 10 #Hz
+SIM_RATE = 5 #Hz
 
 # PHI_SIZE = 1024
 PHI_SIZE = 256
@@ -29,8 +46,8 @@ V0 = 1.0 #prefered vel
 R = 1.0 #radius of drone 
 
 N_DRONES = 10
-SIM_TIME = 600.0 #s
-SIM_START_COLLECT_DATA = 200.0 #s 
+SIM_TIME = 300.0 #s
+SIM_START_COLLECT_DATA = 100.0 #s 
 SPAWN_DIST = 5 #m
 
 PI = math.pi
@@ -43,6 +60,7 @@ class drone:
                     ALP0: float =ALP0, ALP1_LR: float =ALP1_LR, ALP1_UD: float =ALP1_UD, 
                     BET0: float =BET0, BET1_LR: float =BET1_LR, BET1_UD: float =BET1_UD, 
                     LAM0: float =LAM0, LAM1_LR: float =LAM1_LR, LAM1_UD: float =LAM1_UD) -> None:
+        
         self.x = x #global coords
         self.y = y 
         self.z = z
@@ -60,7 +78,7 @@ class drone:
         self.BET0, self.BET1_LR, self.BET1_UD = BET0, BET1_LR, BET1_UD
         self.LAM0, self.LAM1_LR, self.LAM1_UD = LAM0, LAM1_LR, LAM1_UD
 
-        self.V = VisualField(PHI_SIZE, THETA_SIZE) 
+        self.V = VisualField(PHI_SIZE, THETA_SIZE, True) 
 
         phi_lin_spaced = np.linspace(-np.pi, np.pi, PHI_SIZE)
         theta_lin_spaced = np.linspace(-np.pi / 2, np.pi / 2, THETA_SIZE)
@@ -77,29 +95,28 @@ class drone:
         self.velocity = np.array([0.0, 0.0, 0.0]) #vx, vy, vz in global coords
         self.velocity_norm = 0.0
 
+        # Precompute common factors to avoid repeated calculations
+        theta_indices = np.arange(self.THETA_SIZE)
+        angle_z_to_theta = np.pi - theta_indices * (np.pi / (self.THETA_SIZE - 1))
+        self.sin_angle_z_to_theta = np.sin(angle_z_to_theta)
+    
     def dPhi_V_of(self, V: npt.ArrayLike) -> npt.ArrayLike:
-        # circular padding for edge cases
-        padV = np.pad(V, (1, 1), 'wrap')
-        dPhi_V_raw = np.diff(padV)
+        # Compute circular differences directly without padding
+        dPhi_V_raw = np.diff(V, prepend=V[-1], append=V[0])
 
-        # we want to include non-zero value if it is on the edge
+        # Handle the edge condition efficiently
         if dPhi_V_raw[0] > 0 and dPhi_V_raw[-1] > 0:
-            dPhi_V_raw = dPhi_V_raw[0:-1]
-
+            return dPhi_V_raw[:-1]
         else:
-            dPhi_V_raw = dPhi_V_raw[1:, ...]
-
-        dPhi_V = dPhi_V_raw
-        return dPhi_V
+            return dPhi_V_raw[1:]
     
     def dTheta_V_of(self, row_idx: int) -> npt.ArrayLike:
-        dTheta_V = np.zeros(self.PHI_SIZE)
-        if row_idx<=0 or row_idx>=self.PHI_SIZE:
-            return dTheta_V
+        # Check for edge cases
+        if row_idx <= 0 or row_idx >= self.PHI_SIZE:
+            return np.zeros(self.PHI_SIZE)
         
-        for col_idx in range(self.PHI_SIZE):
-            dTheta_V[col_idx] = self.V[row_idx, col_idx] - self.V[row_idx-1, col_idx]
-        return dTheta_V
+        # Use slicing to compute the difference directly
+        return self.V[row_idx, :] - self.V[row_idx - 1, :]
 
     def compute_state_variables_3d(self):
         v_integral_by_dphi = np.zeros(self.THETA_SIZE)
@@ -107,13 +124,13 @@ class drone:
         v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
 
         for i in range(self.THETA_SIZE):
-            angle_z_to_theta = np.pi - i * (np.pi / (self.THETA_SIZE - 1))
             V_row = self.V.field[i, :].astype(float)
             dPhi_V = self.dPhi_V_of(V_row)
             dTheta_V = self.dTheta_V_of(i)
 
             G = -V_row
             G_spike = dPhi_V**2
+            G_spike_UD = dTheta_V**2
 
             integrand_dvel = G * self.cos_phi
             integrand_dpsi = G * self.sin_phi
@@ -122,9 +139,46 @@ class drone:
             integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
             integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
 
-            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
-            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
-            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (dTheta_V**2).sum()) * np.sin(angle_z_to_theta)
+            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
+
+        v_integral_by_dphi *= self.cos_theta
+        psi_integral_by_dphi *= self.cos_theta
+        v_z_integral_by_dphi *= self.sin_theta
+
+        dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_integral_by_dphi[self.THETA_SIZE - 1])
+        dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * psi_integral_by_dphi[self.THETA_SIZE - 1])
+        dv_z = self.d_theta * (0.5 * v_z_integral_by_dphi[0] + v_z_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_z_integral_by_dphi[self.THETA_SIZE - 1])
+
+        dvel += self.GAM * (self.V0 - self.velocity_norm)
+
+        return dvel, dpsi, dv_z
+    
+    def compute_state_variables_3d_new(self): # for testing
+        v_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        psi_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
+
+        for i in range(self.THETA_SIZE):
+            V_row = self.V.field[i, :].astype(float)
+            dPhi_V = self.dPhi_V_of(V_row)
+            dTheta_V = self.dTheta_V_of(i)
+
+            G = -V_row
+            G_spike = dPhi_V**2
+            G_spike_UD = dTheta_V**2
+
+            integrand_dvel = G * self.cos_phi
+            integrand_dpsi = G * self.sin_phi
+
+            integral_dvel = self.d_phi * (0.5 * integrand_dvel[0] + integrand_dvel[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dvel[self.PHI_SIZE - 1])
+            integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
+            integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
+
+            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
 
         v_integral_by_dphi *= self.cos_theta
         psi_integral_by_dphi *= self.cos_theta
@@ -160,30 +214,34 @@ class drone:
         """
         input xyz are global coords of newly observed drone that I want to push into visual field  
         """
-        relative_xy = np.array([self.x - x, self.y -y])
-        relative_z = self.z - z
+        relative_xy = np.array([x - self.x, y - self.y])
+        relative_z = z - self.z
         dist = np.sqrt(pow(relative_xy[0],2) + pow(relative_xy[1],2) + pow(relative_z,2))
         Rot_psi = np.array([[np.cos(self.psi), -np.sin(self.psi)],
                             [np.sin(self.psi), np.cos(self.psi)]])
         xy_local = Rot_psi @ relative_xy
         phi = np.atan2(xy_local[1], xy_local[0])
-        theta = np.arcsin(abs(relative_z) / dist)
+        theta = np.arcsin(relative_z / dist)
         alpha = np.atan(R/dist)
         self.V.setSphereCap(phi, theta, alpha)
         return
 
-        
 class simulation:
-    def __init__(self, SIM_RATE: int, N_DRONES: int =N_DRONES, SIM_TIME: float =SIM_TIME, SIM_START_COLLECT_DATA: float =SIM_START_COLLECT_DATA, SHOW: bool =False) -> None:
+    def __init__(self, SIM_RATE: int, N_DRONES: int =N_DRONES, SIM_TIME: float =SIM_TIME, SIM_START_COLLECT_DATA: float =SIM_START_COLLECT_DATA, SHOW: bool =False, alp0: float=ALP0, bet0: float=BET0, lam0: float=LAM0) -> None:
         self.SIM_RATE = SIM_RATE
         self.N_DRONES = N_DRONES
         self.SIM_TIME = SIM_TIME
         self.SIM_START_COLLECT_DATA = SIM_START_COLLECT_DATA
         self.SHOW = SHOW
+        self.ALP0 = alp0
+        self.BET0 = bet0
+        self.LAM0 = lam0
         self.drones = self.spawn_drones(n_drones=N_DRONES)
         self.minDist = float('inf')
-        self.avgMinDist = 0
+        self.avgMinDist = 0.
         self.cntMinDist = 0
+        self.polarization = 0.
+        self.cntPol = 0
     
     def spawn_drones(self, n_drones) -> list:
         drones_list = []
@@ -194,9 +252,9 @@ class simulation:
             drones_list.append(drone(x, y, z, 0, 
                     PHI_SIZE, THETA_SIZE,
                     GAM, V0, R, SIM_RATE,
-                    ALP0, ALP1_LR, ALP1_UD, 
-                    BET0, BET1_LR, BET1_UD, 
-                    LAM0, LAM1_LR, LAM1_UD))
+                    self.ALP0, ALP1_LR, ALP1_UD, 
+                    self.BET0, BET1_LR, BET1_UD, 
+                    self.LAM0, LAM1_LR, LAM1_UD))
 
         return drones_list
     
@@ -244,14 +302,41 @@ class simulation:
 
     def updateDronesStateVar(self):
         for drone in self.drones:
+            # start_time = time.time()
             dvel, dpsi, dv_z = drone.compute_state_variables_3d()
+            # end_time = time.time()
+            # old_ver_time = end_time-start_time
+            # print(f"compute_state_variables_3d executed in {old_ver_time:.5f} seconds. dvel, dpsi, dvz", dvel, dpsi, dv_z)
+
+            # start_time = time.time()
+            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_new()
+            # end_time = time.time()
+            # new_ver_time = end_time-start_time
+            # print(f"compute_state_variables_3d_new executed in {new_ver_time:.5f} seconds. dvel, dpsi, dvz", dvel, dpsi, dv_z)
+            # print(f"new version is this much better or worse: {old_ver_time-new_ver_time:.5f}")
+
+            # print()
             drone.updateVelocity(dvel, dpsi, dv_z)
 
-    def getMinDistInfo(self):
+    def getAllVel(self):
+        velocities = np.empty((self.N_DRONES, 3)) 
+
+        for i, drone in enumerate(self.drones):
+            velocities[i] = drone.velocity
+        
+        return velocities
+    
+    def calcPol(self):
+        velocities = self.getAllVel()
+        mean_heading = np.mean(velocities, axis=0)
+        pol = np.linalg.norm(mean_heading)
+        return pol
+
+    def getMinDistInfoAndPol(self):
         x, y, z = self.getDronesPositions()
         n = len(x)
 
-        min_distances = np.array([])
+        min_distances = np.zeros(n)
 
         now_observed_min_dist = float('inf')
 
@@ -262,10 +347,17 @@ class simulation:
                     dist = math.sqrt((x[i] - x[j])**2 + (y[i] - y[j])**2 + (z[i] - z[j])**2)
                     min_dist = min(min_dist, dist)
             now_observed_min_dist = min(now_observed_min_dist, min_dist)
-            min_distances.append(min_dist)
+            min_distances[i] = min_dist
         self.minDist = min(self.minDist, now_observed_min_dist)
         self.avgMinDist = (self.avgMinDist*self.cntMinDist + min_distances.sum())/(self.cntMinDist+n)
+        self.polarization = (self.polarization*self.cntPol + self.calcPol())/(self.cntPol+1)
 
+    def writeCsv(self):
+        drone1 = self.drones[0]
+        data = [drone1.ALP0, drone1.ALP1_LR, drone1.ALP1_UD, drone1.BET0, drone1.BET1_LR, drone1.BET1_UD, drone1.LAM0, drone1.LAM1_LR, drone1.LAM1_UD, self.minDist, self.avgMinDist, self.polarization]
+        with open('data.csv', mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(data)
 
     def simulate(self):
         dt = 1/self.SIM_RATE
@@ -274,32 +366,41 @@ class simulation:
             self.startPlotDrones()
         while t<self.SIM_TIME:
             t += dt
+            # print("Simulation time right now is: ", t, " s")
 
+            # start_time = time.time()
             self.updateVFieldForDrones()
+            # end_time = time.time()
+            # print(f"updateVFieldForDrones executed in {end_time-start_time:.6f} seconds.")
+
+            # start_time = time.time()
             self.updateDronesStateVar()
+            # end_time = time.time()
+            # print(f"updateDronesStateVar executed in {end_time-start_time:.6f} seconds.")
+
+            # start_time = time.time()
             self.updateDronesPosition()
+            # end_time = time.time()
+            # print(f"updateDronesPosition executed in {end_time-start_time:.6f} seconds.")
 
             if self.SHOW:
                 self.updatePlotDrones()
             if t>=self.SIM_START_COLLECT_DATA:
-                self.getMinDistInfo()
-        print(self.minDist, self.avgMinDist)
-                
-                
-
-    
-
+                self.getMinDistInfoAndPol()
+        self.writeCsv()
+                              
 class VisualField: 
     """
     spherical representation of the visual field as a rows x cols -> theta x phi discretization
     
     """
-    def __init__(self, phi_size: int, theta_size: int) -> None:
+    def __init__(self, phi_size: int, theta_size: int, simplet_V_field: bool =False) -> None:
         self.field = np.zeros((theta_size, phi_size))
         self.theta_size = theta_size #rows
         self.phi_size = phi_size #cols
         self.d_phi = 2*PI/phi_size
         self.d_theta = PI/theta_size
+        self.simple_V_Field = simplet_V_field
     
     def __getitem__(self, indices):
         return self.field[indices]  
@@ -405,16 +506,16 @@ class VisualField:
         """
         helper function for setSphereCap
         """
-        self.field[row_start:row_end, col_start:col_end] = 1
-        # for row in range(row_start, row_end):
-        #         for col in range(col_start, col_end):
-        #             phi = self.colToPhi(col)
-        #             theta  =self.rowToTheta(row)
-        #             x, y, z = self.sphericalToCartesian(self.phiShift(phi), self.thetaShift(theta))
-        #             dot_product = x*x_c + y*y_c + z*z_c
-        #             distance = np.acos(dot_product)
-        #             if distance <= alpha:
-        #                 self.field[row, col] = 1
+        # self.field[row_start:row_end, col_start:col_end] = 1
+        for row in range(row_start, row_end):
+                for col in range(col_start, col_end):
+                    phi = self.colToPhi(col)
+                    theta  =self.rowToTheta(row)
+                    x, y, z = self.sphericalToCartesian(self.phiShift(phi), self.thetaShift(theta))
+                    dot_product = x*x_c + y*y_c + z*z_c
+                    distance = np.acos(dot_product)
+                    if distance <= alpha:
+                        self.field[row, col] = 1
         return
 
     def setSphereCap(self, phi_center: float, theta_center: float, alpha: float) -> None: #TESTED
@@ -423,6 +524,22 @@ class VisualField:
         theta_center - angle from xy to the center of the cap
         alpha - angle from the center of the cap to the edge of the cap
         """
+        if self.simple_V_Field:
+            theta_min = self.thetaToRow(self.thetaToRange(theta_center-alpha))
+            theta_max = self.thetaToRow(self.thetaToRange(theta_center+alpha))
+            if theta_min==0 or theta_max==self.theta_size-1:
+                phi_min = 0
+                phi_max = self.phi_size-1
+            else:
+                phi_min = self.phiToCol(phi_center-alpha)
+                phi_max = self.phiToCol(phi_center+alpha)
+            if phi_min<phi_max:
+                self.field[theta_min:theta_max, phi_min:phi_max] = 1
+            else:
+                self.field[theta_min:theta_max, phi_min:self.phi_size-1] = 1
+                self.field[theta_min:theta_max, 0:phi_max] = 1
+            return
+
         x_center, y_center, z_center = self.sphericalToCartesian(self.phiShift(phi_center), self.thetaShift(theta_center))
         theta_min = self.thetaToRow(self.thetaToRange(theta_center-alpha))
         theta_max = self.thetaToRow(self.thetaToRange(theta_center+alpha))
@@ -432,10 +549,12 @@ class VisualField:
         else: 
             phi_min = self.phiToCol(phi_center-alpha)
             phi_max = self.phiToCol(phi_center+alpha)
-
+        # print(phi_min, phi_max)
+        # print(theta_min, theta_max)
         if phi_min <= phi_max: #normal case
             self.fillFieldWithinAlpha(theta_min, theta_max+1, phi_min, phi_max+1, x_center, y_center, z_center, alpha)
         else: #sad case :(
+
             self.fillFieldWithinAlpha(theta_min, theta_max+1, phi_min, self.phi_size, x_center, y_center, z_center, alpha)
 
             self.fillFieldWithinAlpha(theta_min, theta_max+1, 0, phi_max, x_center, y_center, z_center, alpha)
@@ -486,7 +605,25 @@ class VisualField:
         plt.show()
 
 
+def test(x, y, z):
+    # phisize = 1024
+    # thetasize = 256
 
+    phisize = 256
+    thetasize = 128
+    drone1 = drone(0, 0, 0, 0, 
+                    PHI_SIZE=phisize, THETA_SIZE=thetasize,
+                    GAM=GAM, V0=V0, R=R, SIM_RATE=SIM_RATE,
+                    ALP0=1, ALP1_LR=0.08, ALP1_UD=0., 
+                    BET0=1, BET1_LR=0.08, BET1_UD=0., 
+                    LAM0=1, LAM1_LR=0.08, LAM1_UD=0.08)
+    drone1.updateVFieldBasedOnDroneCoords(x*3, y*3, z*3)
+    dvel, dpsi, dvz = drone1.compute_state_variables_3d()
+    # drone1.setZeroVisualField()
+    # drone1.updateVFieldBasedOnDroneCoords(x*10, y*10, z*10)
+    # dvel, dpsi, dvz = drone1.compute_state_variables_3d()
+
+    drone1.V.plotVisualField()
 
 if __name__ == "__main__":
     # log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -498,7 +635,26 @@ if __name__ == "__main__":
     # for i in range(30):
     #     drone1.updateVelocity(1, 0, 0)
     #     print("time: ", i*1/30, "position: ", drone1.velocity[0], drone1.velocity[1], drone1.velocity[2])
-    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True)
-    sim.simulate()
+
+    # x = 0.
+    # y = 0.
+    # z = 1.
+    # test(x, y, z)
+    # exit()
+
+    # sim for alpha1 bet1 and lam1 is 12.5 BL
+    alp0 = [0.02, 0.1, 0.5, 2, 10]
+    bet0 = [0.02, 0.1, 0.5, 2, 10]
+    lam0 = [0.02, 0.1, 0.5, 2, 10]
+    # start_time = time.time()
+    # sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=False)
+    # sim.simulate()
+    # end_time = time.time()
+    # print(f"Function executed in {end_time-start_time:.6f} seconds.")
+
+    combinations = list(itertools.product(alp0, bet0, lam0))
+    for alpha, beta, lam in tqdm(combinations):
+        sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=False, alp0=alpha, bet0=beta, lam0=lam)
+        sim.simulate()
 
 
