@@ -267,48 +267,75 @@ class drone:
                             ALP0, ALP1_LR, ALP1_UD, BET0, BET1_LR, BET1_UD, LAM0, LAM1_LR, LAM1_UD,
                             d_phi, d_theta, GAM, V0, velocity_norm,
                             v_integral_out, psi_integral_out, vz_integral_out):
-        # Get 2D grid indices
-        row, col = cuda.grid(2)
+        row, col = cuda.grid(2)  # 2D grid indices: row (theta), col (phi)
 
-        PHI_SIZE = V_field.shape[1]
-        THETA_SIZE = V_field.shape[0]
+        # Shared memory for reduction across the row (phi axis)
+        smem_dvel = cuda.shared.array(256, dtype=float32)
+        smem_dpsi = cuda.shared.array(256, dtype=float32)
+        smem_dvz = cuda.shared.array(256, dtype=float32)
 
         if row < THETA_SIZE and col < PHI_SIZE:
             # Access the row of V_field
             V_row = V_field[row, :]
 
-            # Compute circular differences along phi axis
+            # Compute circular differences for dPhi_V
             dPhi_V = V_row[(col + 1) % PHI_SIZE] - V_row[col]
 
             # Compute row differences for dTheta_V
-            dTheta_V = 0.0
             if row > 0:
                 dTheta_V = V_row[col] - V_field[row - 1, col]
+            else:
+                dTheta_V = 0.0  # Boundary condition for the first row
 
             # Compute intermediate terms
             G = -V_row[col]
             G_spike = dPhi_V ** 2
             G_spike_UD = dTheta_V ** 2
 
-            # Use shared memory for trapezoidal integration
+            # Compute the integrands
             integrand_dvel = G * cos_phi[col]
             integrand_dpsi = G * sin_phi[col]
-            integral_dvel = d_phi * integrand_dvel
-            integral_dpsi = d_phi * integrand_dpsi
-            integral_dv_z = d_phi * G
+            integrand_dvz = G
 
-            # Accumulate using atomic operations
-            cuda.atomic.add(v_integral_out, row,
-                            ALP0 * (integral_dvel + ALP1_LR * G_spike * cos_phi[col] + ALP1_UD * G_spike_UD * cos_phi[col])
-                            * sin_angle_z_to_theta[row])
+            # Store the integrands in shared memory for reduction
+            smem_dvel[cuda.threadIdx.x] = integrand_dvel
+            smem_dpsi[cuda.threadIdx.x] = integrand_dpsi
+            smem_dvz[cuda.threadIdx.x] = integrand_dvz
+            cuda.syncthreads()
 
-            cuda.atomic.add(psi_integral_out, row,
-                            BET0 * (integral_dpsi + BET1_LR * G_spike * sin_phi[col] + BET1_UD * G_spike_UD * sin_phi[col])
-                            * sin_angle_z_to_theta[row])
+            # Perform reduction to compute the integral using the trapezoidal rule
+            integral_dvel = 0.0
+            integral_dpsi = 0.0
+            integral_dvz = 0.0
+            if col == 0:
+                integral_dvel += 0.5 * smem_dvel[0]  # First term
+                integral_dpsi += 0.5 * smem_dpsi[0]
+                integral_dvz += 0.5 * smem_dvz[0]
+            elif col == PHI_SIZE - 1:
+                integral_dvel += 0.5 * smem_dvel[col]  # Last term
+                integral_dpsi += 0.5 * smem_dpsi[col]
+                integral_dvz += 0.5 * smem_dvz[col]
+            else:
+                integral_dvel += smem_dvel[col]  # Middle terms
+                integral_dpsi += smem_dpsi[col]
+                integral_dvz += smem_dvz[col]
 
-            cuda.atomic.add(vz_integral_out, row,
-                            LAM0 * (integral_dv_z + LAM1_LR * G_spike + LAM1_UD * G_spike_UD)
-                            * sin_angle_z_to_theta[row])
+            integral_dvel *= d_phi
+            integral_dpsi *= d_phi
+            integral_dvz *= d_phi
+
+            # Compute final integrals for this row
+            cuda.atomic.add(v_integral_out, row, ALP0 * (
+                integral_dvel + ALP1_LR * G_spike * cos_phi[col] + ALP1_UD * G_spike_UD * cos_phi[col]
+            ) * sin_angle_z_to_theta[row])
+
+            cuda.atomic.add(psi_integral_out, row, BET0 * (
+                integral_dpsi + BET1_LR * G_spike * sin_phi[col] + BET1_UD * G_spike_UD * sin_phi[col]
+            ) * sin_angle_z_to_theta[row])
+
+            cuda.atomic.add(vz_integral_out, row, LAM0 * (
+                integral_dvz + LAM1_LR * G_spike + LAM1_UD * G_spike_UD
+            ) * sin_angle_z_to_theta[row])
 
     def compute_state_variables_3d(self):
         # Allocate GPU memory for input arrays
