@@ -7,6 +7,8 @@ import time
 import itertools
 from tqdm import tqdm
 import csv
+from numba import cuda, float32
+
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -40,6 +42,8 @@ SIM_RATE = 5 #Hz
 # PHI_SIZE = 1024
 PHI_SIZE = 256
 THETA_SIZE = 128
+# PHI_SIZE = 16384
+# THETA_SIZE = 8192
 
 GAM = 0.1 #relaxation rate
 V0 = 1.0 #prefered vel
@@ -118,38 +122,264 @@ class drone:
         # Use slicing to compute the difference directly
         return self.V[row_idx, :] - self.V[row_idx - 1, :]
 
+
+    # @staticmethod
+    # @cuda.jit
+    # def compute_state_kernel(V_field, cos_phi, sin_phi, sin_angle_z_to_theta, cos_theta, sin_theta,
+    #                         ALP0, ALP1_LR, ALP1_UD, BET0, BET1_LR, BET1_UD, LAM0, LAM1_LR, LAM1_UD,
+    #                         d_phi, d_theta, GAM, V0, velocity_norm,
+    #                         v_integral_out, psi_integral_out, vz_integral_out):
+    #     i = cuda.grid(1)  # Thread ID for the row
+    #     if i < V_field.shape[0]:  # Bounds check for rows
+
+    #         # Access the i-th row
+    #         V_row = V_field[i, :]
+
+    #         # Compute dPhi_V (circular differences)
+    #         dPhi_V = cuda.local.array(PHI_SIZE, dtype=float32)
+    #         for j in range(PHI_SIZE):
+    #             dPhi_V[j] = V_row[(j + 1) % PHI_SIZE] - V_row[j]
+
+    #         # Compute dTheta_V (row differences)
+    #         dTheta_V = cuda.local.array(PHI_SIZE, dtype=float32)
+    #         if i > 0:
+    #             for j in range(PHI_SIZE):
+    #                 dTheta_V[j] = V_row[j] - V_field[i - 1, j]
+    #         else:
+    #             for j in range(PHI_SIZE):
+    #                 dTheta_V[j] = 0.0  # Boundary condition for the first row
+
+    #         # Calculate intermediate terms
+    #         G = cuda.local.array(PHI_SIZE, dtype=float32)
+    #         G_spike = cuda.local.array(PHI_SIZE, dtype=float32)
+    #         G_spike_UD = cuda.local.array(PHI_SIZE, dtype=float32)
+    #         for j in range(PHI_SIZE):
+    #             G[j] = -V_row[j]
+    #             G_spike[j] = dPhi_V[j] ** 2
+    #             G_spike_UD[j] = dTheta_V[j] ** 2
+
+    #         # Compute integrals
+    #         integral_dvel = float32(0.0)
+    #         integral_dpsi = float32(0.0)
+    #         integral_dv_z = float32(0.0)
+
+    #         # First term in the trapezoidal integration
+    #         integral_dvel += 0.5 * G[0] * cos_phi[0]
+    #         integral_dpsi += 0.5 * G[0] * sin_phi[0]
+    #         integral_dv_z += 0.5 * G[0]
+
+    #         # Middle terms
+    #         for j in range(1, PHI_SIZE- 1):
+    #             integral_dvel += G[j] * cos_phi[j]
+    #             integral_dpsi += G[j] * sin_phi[j]
+    #             integral_dv_z += G[j]
+
+    #         # Last term in the trapezoidal integration
+    #         integral_dvel += 0.5 * G[PHI_SIZE - 1] * cos_phi[PHI_SIZE - 1]
+    #         integral_dpsi += 0.5 * G[PHI_SIZE - 1] * sin_phi[PHI_SIZE - 1]
+    #         integral_dv_z += 0.5 * G[PHI_SIZE - 1]
+
+    #         # Multiply by d_phi to get the integral
+    #         integral_dvel *= d_phi
+    #         integral_dpsi *= d_phi
+    #         integral_dv_z *= d_phi
+
+
+    #         # Compute outputs for this row
+    #         v_integral_sum_LR = float32(0.0)
+    #         v_integral_sum_UD = float32(0.0)
+    #         psi_integral_sum_LR = float32(0.0)
+    #         psi_integral_sum_UD = float32(0.0)
+    #         vz_integral_sum_LR = float32(0.0)
+    #         vz_integral_sum_UD = float32(0.0)
+
+    #         # Explicit summation using loops
+    #         for j in range(PHI_SIZE):
+    #             v_integral_sum_LR += G_spike[j] * cos_phi[j]
+    #             v_integral_sum_UD += G_spike_UD[j] * cos_phi[j]
+    #             psi_integral_sum_LR += G_spike[j] * sin_phi[j]
+    #             psi_integral_sum_UD += G_spike_UD[j] * sin_phi[j]
+    #             vz_integral_sum_LR += G_spike[j]
+    #             vz_integral_sum_UD += G_spike_UD[j]
+
+    #         # Combine results into final outputs
+    #         v_integral_out[i] = ALP0 * (
+    #             integral_dvel + ALP1_LR * v_integral_sum_LR + ALP1_UD * v_integral_sum_UD
+    #         ) * sin_angle_z_to_theta[i]
+
+    #         psi_integral_out[i] = BET0 * (
+    #             integral_dpsi + BET1_LR * psi_integral_sum_LR + BET1_UD * psi_integral_sum_UD
+    #         ) * sin_angle_z_to_theta[i]
+
+    #         vz_integral_out[i] = LAM0 * (
+    #             integral_dv_z + LAM1_LR * vz_integral_sum_LR + LAM1_UD * vz_integral_sum_UD
+    #         ) * sin_angle_z_to_theta[i]
+
+
+    # def compute_state_variables_3d(self):
+    #     batch_size = 64
+    #     # Output arrays
+    #     V_field_device = cuda.to_device(self.V.field.astype(np.float32))
+    #     cos_phi_device = cuda.to_device(self.cos_phi.astype(np.float32))
+    #     sin_phi_device = cuda.to_device(self.sin_phi.astype(np.float32))
+    #     sin_angle_z_to_theta_device = cuda.to_device(self.sin_angle_z_to_theta.astype(np.float32))
+    #     cos_theta_device = cuda.to_device(self.cos_theta.astype(np.float32))
+    #     sin_theta_device = cuda.to_device(self.sin_theta.astype(np.float32))
+
+    #     # Allocate device memory for outputs
+    #     v_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+    #     psi_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+    #     vz_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+
+    #     # Launch the kernel
+    #     threads_per_block = 128
+    #     blocks_per_grid = (self.THETA_SIZE + threads_per_block - 1) // threads_per_block
+
+    #     for batch_start in range(0, self.THETA_SIZE, batch_size):
+    #         batch_end = min(batch_start + batch_size, self.THETA_SIZE)
+    #         self.compute_state_kernel[blocks_per_grid, threads_per_block](
+    #             V_field_device[batch_start:batch_end], cos_phi_device, sin_phi_device, sin_angle_z_to_theta_device,
+    #             cos_theta_device, sin_theta_device, self.ALP0, self.ALP1_LR, self.ALP1_UD,
+    #             self.BET0, self.BET1_LR, self.BET1_UD, self.LAM0, self.LAM1_LR, self.LAM1_UD,
+    #             self.d_phi, self.d_theta, self.GAM, self.V0, self.velocity_norm,
+    #             v_integral_device, psi_integral_device, vz_integral_device
+    #         )
+
+    #     v_integral = v_integral_device.copy_to_host()
+    #     psi_integral = psi_integral_device.copy_to_host()
+    #     vz_integral = vz_integral_device.copy_to_host()
+    #     # Compute final results
+    #     v_integral *= self.cos_theta
+    #     psi_integral *= self.cos_theta
+    #     vz_integral *= self.sin_theta
+
+    #     dvel = self.d_theta * (0.5 * v_integral[0] + v_integral[1:-1].sum() + 0.5 * v_integral[-1])
+    #     dpsi = self.d_theta * (0.5 * psi_integral[0] + psi_integral[1:-1].sum() + 0.5 * psi_integral[-1])
+    #     dv_z = self.d_theta * (0.5 * vz_integral[0] + vz_integral[1:-1].sum() + 0.5 * vz_integral[-1])
+
+    #     dvel += self.GAM * (self.V0 - self.velocity_norm)
+
+    #     return dvel, dpsi, dv_z
+
+    @staticmethod
+    @cuda.jit
+    def compute_state_kernel(V_field, cos_phi, sin_phi, sin_angle_z_to_theta, cos_theta, sin_theta,
+                            ALP0, ALP1_LR, ALP1_UD, BET0, BET1_LR, BET1_UD, LAM0, LAM1_LR, LAM1_UD,
+                            d_phi, d_theta, GAM, V0, velocity_norm,
+                            v_integral_out, psi_integral_out, vz_integral_out):
+        row, col = cuda.grid(2)  # 2D grid indices: row (theta), col (phi)
+
+        # Shared memory for reduction across the row (phi axis)
+        smem_dvel = cuda.shared.array(256, dtype=float32)
+        smem_dpsi = cuda.shared.array(256, dtype=float32)
+        smem_dvz = cuda.shared.array(256, dtype=float32)
+
+        if row < THETA_SIZE and col < PHI_SIZE:
+            # Access the row of V_field
+            V_row = V_field[row, :]
+
+            # Compute circular differences for dPhi_V
+            dPhi_V = V_row[(col + 1) % PHI_SIZE] - V_row[col]
+
+            # Compute row differences for dTheta_V
+            if row > 0:
+                dTheta_V = V_row[col] - V_field[row - 1, col]
+            else:
+                dTheta_V = 0.0  # Boundary condition for the first row
+
+            # Compute intermediate terms
+            G = -V_row[col]
+            G_spike = dPhi_V ** 2
+            G_spike_UD = dTheta_V ** 2
+
+            # Compute the integrands
+            integrand_dvel = G * cos_phi[col]
+            integrand_dpsi = G * sin_phi[col]
+            integrand_dvz = G
+
+            # Store the integrands in shared memory for reduction
+            smem_dvel[cuda.threadIdx.x] = integrand_dvel
+            smem_dpsi[cuda.threadIdx.x] = integrand_dpsi
+            smem_dvz[cuda.threadIdx.x] = integrand_dvz
+            cuda.syncthreads()
+
+            # Perform reduction to compute the integral using the trapezoidal rule
+            integral_dvel = 0.0
+            integral_dpsi = 0.0
+            integral_dvz = 0.0
+            if col == 0:
+                integral_dvel += 0.5 * smem_dvel[0]  # First term
+                integral_dpsi += 0.5 * smem_dpsi[0]
+                integral_dvz += 0.5 * smem_dvz[0]
+            elif col == PHI_SIZE - 1:
+                integral_dvel += 0.5 * smem_dvel[col]  # Last term
+                integral_dpsi += 0.5 * smem_dpsi[col]
+                integral_dvz += 0.5 * smem_dvz[col]
+            else:
+                integral_dvel += smem_dvel[col]  # Middle terms
+                integral_dpsi += smem_dpsi[col]
+                integral_dvz += smem_dvz[col]
+
+            integral_dvel *= d_phi
+            integral_dpsi *= d_phi
+            integral_dvz *= d_phi
+
+            # Compute final integrals for this row
+            cuda.atomic.add(v_integral_out, row, ALP0 * (
+                integral_dvel + ALP1_LR * G_spike * cos_phi[col] + ALP1_UD * G_spike_UD * cos_phi[col]
+            ) * sin_angle_z_to_theta[row])
+
+            cuda.atomic.add(psi_integral_out, row, BET0 * (
+                integral_dpsi + BET1_LR * G_spike * sin_phi[col] + BET1_UD * G_spike_UD * sin_phi[col]
+            ) * sin_angle_z_to_theta[row])
+
+            cuda.atomic.add(vz_integral_out, row, LAM0 * (
+                integral_dvz + LAM1_LR * G_spike + LAM1_UD * G_spike_UD
+            ) * sin_angle_z_to_theta[row])
+
     def compute_state_variables_3d(self):
-        v_integral_by_dphi = np.zeros(self.THETA_SIZE)
-        psi_integral_by_dphi = np.zeros(self.THETA_SIZE)
-        v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        # Allocate GPU memory for input arrays
+        V_field_device = cuda.to_device(self.V.field.astype(np.float32))
+        cos_phi_device = cuda.to_device(self.cos_phi.astype(np.float32))
+        sin_phi_device = cuda.to_device(self.sin_phi.astype(np.float32))
+        sin_angle_z_to_theta_device = cuda.to_device(self.sin_angle_z_to_theta.astype(np.float32))
+        cos_theta_device = cuda.to_device(self.cos_theta.astype(np.float32))
+        sin_theta_device = cuda.to_device(self.sin_theta.astype(np.float32))
 
-        for i in range(self.THETA_SIZE):
-            V_row = self.V.field[i, :].astype(float)
-            dPhi_V = self.dPhi_V_of(V_row)
-            dTheta_V = self.dTheta_V_of(i)
+        # Allocate device memory for output arrays
+        v_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+        psi_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+        vz_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
 
-            G = -V_row
-            G_spike = dPhi_V**2
-            G_spike_UD = dTheta_V**2
+        # Kernel launch configuration
+        threads_per_block = (16, 16)  # 16 threads in x (phi) and y (rows/batches)
+        blocks_per_grid = (
+            (self.PHI_SIZE + threads_per_block[0] - 1) // threads_per_block[0],
+            (self.THETA_SIZE + threads_per_block[1] - 1) // threads_per_block[1]
+        )
 
-            integrand_dvel = G * self.cos_phi
-            integrand_dpsi = G * self.sin_phi
+        # Launch the kernel
+        self.compute_state_kernel[blocks_per_grid, threads_per_block](
+            V_field_device, cos_phi_device, sin_phi_device, sin_angle_z_to_theta_device,
+            cos_theta_device, sin_theta_device, self.ALP0, self.ALP1_LR, self.ALP1_UD,
+            self.BET0, self.BET1_LR, self.BET1_UD, self.LAM0, self.LAM1_LR, self.LAM1_UD,
+            self.d_phi, self.d_theta, self.GAM, self.V0, self.velocity_norm,
+            v_integral_device, psi_integral_device, vz_integral_device
+        )
 
-            integral_dvel = self.d_phi * (0.5 * integrand_dvel[0] + integrand_dvel[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dvel[self.PHI_SIZE - 1])
-            integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
-            integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
+        # Copy results back to host
+        v_integral = v_integral_device.copy_to_host()
+        psi_integral = psi_integral_device.copy_to_host()
+        vz_integral = vz_integral_device.copy_to_host()
 
-            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
-            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
-            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
+        # Compute final results on the host
+        v_integral *= self.cos_theta
+        psi_integral *= self.cos_theta
+        vz_integral *= self.sin_theta
 
-        v_integral_by_dphi *= self.cos_theta
-        psi_integral_by_dphi *= self.cos_theta
-        v_z_integral_by_dphi *= self.sin_theta
-
-        dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_integral_by_dphi[self.THETA_SIZE - 1])
-        dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * psi_integral_by_dphi[self.THETA_SIZE - 1])
-        dv_z = self.d_theta * (0.5 * v_z_integral_by_dphi[0] + v_z_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_z_integral_by_dphi[self.THETA_SIZE - 1])
+        dvel = self.d_theta * (0.5 * v_integral[0] + v_integral[1:-1].sum() + 0.5 * v_integral[-1])
+        dpsi = self.d_theta * (0.5 * psi_integral[0] + psi_integral[1:-1].sum() + 0.5 * psi_integral[-1])
+        dv_z = self.d_theta * (0.5 * vz_integral[0] + vz_integral[1:-1].sum() + 0.5 * vz_integral[-1])
 
         dvel += self.GAM * (self.V0 - self.velocity_norm)
 
@@ -220,9 +450,9 @@ class drone:
         Rot_psi = np.array([[np.cos(self.psi), -np.sin(self.psi)],
                             [np.sin(self.psi), np.cos(self.psi)]])
         xy_local = Rot_psi @ relative_xy
-        phi = np.atan2(xy_local[1], xy_local[0])
+        phi = np.arctan2(xy_local[1], xy_local[0])
         theta = np.arcsin(relative_z / dist)
-        alpha = np.atan(R/dist)
+        alpha = np.arctan(R/dist)
         self.V.setSphereCap(phi, theta, alpha)
         return
 
