@@ -14,14 +14,14 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 ALP0 = 1.0
-ALP1_LR = 0.08
+ALP1_LR = 0.16
 ALP1_UD = 0.
 BET0 = 0.5
-BET1_LR = 0.08
+BET1_LR = 0.16
 BET1_UD = 0.
 LAM0 = 1.0
-LAM1_LR = 0.08
-LAM1_UD = 0.08
+LAM1_LR = 0.0
+LAM1_UD = 0.16
 
 SIM_RATE = 5 #Hz
 
@@ -195,7 +195,7 @@ class drone:
         vz_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
 
         # Kernel launch configuration
-        threads_per_block = (256, 1)  # 256 threads in x - one thread per phi in one row
+        threads_per_block = (self.PHI_SIZE, 1)  # 256 threads in x - one thread per phi in one row
         blocks_per_grid = (self.THETA_SIZE, 1) # 128 blocks in y (one block per row)
 
         # Launch the kernel
@@ -210,6 +210,9 @@ class drone:
         v_integral = v_integral_device.copy_to_host()
         psi_integral = psi_integral_device.copy_to_host()
         vz_integral = vz_integral_device.copy_to_host()
+        print(f"gpu part of v_integral: {v_integral.sum():.5f}")
+        print(f"gpu part of psi_integral: {psi_integral.sum():.5f}")
+        print(f"gpu part of vz_integral: {vz_integral.sum():.5f}")
 
         # Compute final results on the host
         v_integral *= self.cos_theta
@@ -249,6 +252,10 @@ class drone:
             psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
             v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
 
+        print(f"cpu part of v_integral_by_dphi: {v_integral_by_dphi.sum():.5f}")
+        print(f"cpu part of psi_integral_by_dphi: {psi_integral_by_dphi.sum():.5f}")
+        print(f"cpu part of v_z_integral_by_dphi: {v_z_integral_by_dphi.sum():.5f}")
+
         v_integral_by_dphi *= self.cos_theta
         psi_integral_by_dphi *= self.cos_theta
         v_z_integral_by_dphi *= self.sin_theta
@@ -273,6 +280,7 @@ class drone:
         self.x += self.velocity[0] * self.d_t
         self.y += self.velocity[1] * self.d_t
         self.z += self.velocity[2] * self.d_t
+        # print(f"x: {self.x:.5f}, y: {self.y:.5f}, z: {self.z:.5f}")
         return
 
     def setZeroVisualField(self) -> None:
@@ -310,7 +318,8 @@ class simulation:
         self.avgMinDist = 0.
         self.cntMinDist = 0
         self.polarization = 0.
-        self.cntPol = 0
+        self.avgDist = 0.
+        self.counter = 0
     
     def spawn_drones(self, n_drones) -> list:
         drones_list = []
@@ -369,9 +378,10 @@ class simulation:
 
                 if x_i >= BOX_WIDTH/2:
                     drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=np.pi/4)
+                    print("setting v field")
                 elif x_i <= -BOX_WIDTH/2:
                     drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=np.pi/4)
-                
+
                 if y_i >= BOX_LENGTH/2:
                     drone.V.setSphereCap(phi_center=np.pi/2, theta_center=0., alpha=np.pi/4)
                 elif y_i <= -BOX_LENGTH/2:
@@ -389,23 +399,24 @@ class simulation:
     def updateDronesStateVar(self):
         for drone in self.drones:
 
-            if USE_GPU:
-                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
-            else:
-                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+            # if USE_GPU:
+            #     dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
+            # else:
+            #     dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+            # print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
-            # start_time = time.time()
-            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
-            # end_time = time.time()
-            # old_ver_time = end_time-start_time
-            # print(f"compute_state_variables_3d executed in {old_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
+            start_time = time.time()
+            dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
+            end_time = time.time()
+            old_ver_time = end_time-start_time
+            print(f"compute_state_variables_3d executed in {old_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
-            # start_time = time.time()
-            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
-            # end_time = time.time()
-            # new_ver_time = end_time-start_time
-            # print(f"compute_state_variables_3d_new executed in {new_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
-            # print(f"new version is this much better or worse: {old_ver_time-new_ver_time:.5f}")
+            start_time = time.time()
+            dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+            end_time = time.time()
+            new_ver_time = end_time-start_time
+            print(f"compute_state_variables_3d_new executed in {new_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
+            print(f"cpu version is this much worse: {new_ver_time-old_ver_time:.5f}")
 
 
 
@@ -435,23 +446,34 @@ class simulation:
 
         now_observed_min_dist = float('inf')
 
+        avgDist = 0.
+
         for i in range(n):
             min_dist = float('inf')  # Start with a large number
             for j in range(n):
                 if i != j:  # Skip the same point
                     dist = math.sqrt((x[i] - x[j])**2 + (y[i] - y[j])**2 + (z[i] - z[j])**2)
+                    avgDist += dist
                     min_dist = min(min_dist, dist)
             now_observed_min_dist = min(now_observed_min_dist, min_dist)
             min_distances[i] = min_dist
         self.minDist = min(self.minDist, now_observed_min_dist)
         self.avgMinDist = (self.avgMinDist*self.cntMinDist + min_distances.sum())/(self.cntMinDist+n)
-        self.polarization = (self.polarization*self.cntPol + self.calcPol())/(self.cntPol+1)
+        self.cntMinDist += n
+
+        avgDist /= n
+
+        self.polarization = (self.polarization*self.counter + self.calcPol())/(self.counter+1)
+        self.avgDist = (self.avgDist*self.counter + avgDist)/(self.counter+1)
+
+        self.counter += 1
+
         if(self.polarization>1):
             print(self.polarization, "EXTREM")
 
     def writeCsv(self):
         drone1 = self.drones[0]
-        data = [drone1.ALP0, drone1.ALP1_LR, drone1.ALP1_UD, drone1.BET0, drone1.BET1_LR, drone1.BET1_UD, drone1.LAM0, drone1.LAM1_LR, drone1.LAM1_UD, self.minDist, self.avgMinDist, self.polarization]
+        data = [drone1.ALP0, drone1.ALP1_LR, drone1.ALP1_UD, drone1.BET0, drone1.BET1_LR, drone1.BET1_UD, drone1.LAM0, drone1.LAM1_LR, drone1.LAM1_UD, self.minDist, self.avgMinDist, self.polarization, self.avgDist]
         with open('data.csv', mode='a', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(data)
@@ -753,6 +775,10 @@ if __name__ == "__main__":
     # sim.simulate()
     # end_time = time.time()
     # print(f"Function executed in {end_time-start_time:.6f} seconds.")
+
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=1, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=0.1, bet0=0.1, lam0=0.1)
+    sim.simulate()
+    exit()
 
     alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
     bet0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
