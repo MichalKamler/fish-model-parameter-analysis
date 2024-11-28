@@ -40,6 +40,12 @@ SIM_TIME = 300.0 #s
 SIM_START_COLLECT_DATA = 100.0 #s 
 SPAWN_DIST = 5 #m
 
+USE_BOUNDARY_BOX = True
+BOX_WIDTH = 20. #m
+BOX_LENGTH = 20. #m
+BOX_HEIGHT = 10. #m
+BOX_DIST_FROM_GROUND = 1. #m
+
 PI = math.pi
 PI_2 = PI / 2
 
@@ -179,7 +185,7 @@ class drone:
 
             cuda.atomic.add(vz_integral_out, row, LAM0 * (integral_dvz + LAM1_LR * G_spike_rc + LAM1_UD * G_spike_UD_rc) * sin_angle_z_to_theta[row])
 
-    def compute_state_variables_3d(self):
+    def compute_state_variables_3d_on_gpu(self):
         # Allocate GPU memory for input arrays
         V_field_device = cuda.to_device(self.V.field.astype(np.float32))
 
@@ -218,7 +224,7 @@ class drone:
 
         return dvel, dpsi, dv_z
     
-    def compute_state_variables_3d_new(self): # for testing
+    def compute_state_variables_3d_on_cpu(self):
         v_integral_by_dphi = np.zeros(self.THETA_SIZE)
         psi_integral_by_dphi = np.zeros(self.THETA_SIZE)
         v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
@@ -358,6 +364,23 @@ class simulation:
             for j in range(self.N_DRONES):
                 if x[j]!=x_i and y[j]!=y_i and z[j]!=z_i:
                     drone.updateVFieldBasedOnDroneCoords(x[j], y[j], z[j])
+            
+            if USE_BOUNDARY_BOX:
+
+                if x_i >= BOX_WIDTH/2:
+                    drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=np.pi/4)
+                elif x_i <= -BOX_WIDTH/2:
+                    drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=np.pi/4)
+                
+                if y_i >= BOX_LENGTH/2:
+                    drone.V.setSphereCap(phi_center=np.pi/2, theta_center=0., alpha=np.pi/4)
+                elif y_i <= -BOX_LENGTH/2:
+                    drone.V.setSphereCap(phi_center=-np.pi/2, theta_center=0., alpha=np.pi/4)
+                
+                if z_i >= BOX_HEIGHT+BOX_DIST_FROM_GROUND:
+                    drone.V.setSphereCap(phi_center=0., theta_center=np.pi/2, alpha=np.pi/4)
+                elif z_i <= BOX_DIST_FROM_GROUND:
+                    drone.V.setSphereCap(phi_center=0., theta_center=-np.pi/2, alpha=np.pi/4)
     
     def updateDronesPosition(self):
         for drone in self.drones:
@@ -365,20 +388,27 @@ class simulation:
 
     def updateDronesStateVar(self):
         for drone in self.drones:
+
+            if USE_GPU:
+                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
+            else:
+                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+
             # start_time = time.time()
-            dvel, dpsi, dv_z = drone.compute_state_variables_3d()
+            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
             # end_time = time.time()
             # old_ver_time = end_time-start_time
             # print(f"compute_state_variables_3d executed in {old_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
             # start_time = time.time()
-            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_new()
+            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
             # end_time = time.time()
             # new_ver_time = end_time-start_time
             # print(f"compute_state_variables_3d_new executed in {new_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
             # print(f"new version is this much better or worse: {old_ver_time-new_ver_time:.5f}")
 
-            # print()
+
+
             drone.updateVelocity(dvel, dpsi, dv_z)
 
     def getAllVel(self):
@@ -600,6 +630,7 @@ class VisualField:
             else:
                 phi_min = self.phiToCol(phi_center-alpha)
                 phi_max = self.phiToCol(phi_center+alpha)
+
             if phi_min<phi_max:
                 self.field[theta_min:theta_max, phi_min:phi_max] = 1
             else:
@@ -694,7 +725,7 @@ def test(x, y, z):
 
 if __name__ == "__main__":
     # log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    # V = VisualField(PHI_SIZE, THETA_SIZE)
+    # V = VisualField(PHI_SIZE, THETA_SIZE, simplet_V_field=True)
     # V.setSphereCap(0, -PI_2, PI/4)
     # V.plotVisualField()
 

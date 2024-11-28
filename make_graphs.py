@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 import csv
+import os
 
 R = 1.0
 
@@ -31,10 +32,13 @@ def loadCsvData():
             minDist.append(values[9])
             avgMinDist.append(values[10])
             polarization.append(values[11])
+
     return ALP0, BET0, LAM0, minDist, avgMinDist, polarization
 
-def makeHeatMap(ALP0, BET0, LAM0, data, dataName):
+def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator):
     # Ensure inputs are numpy arrays for easy manipulation
+    root = os.getcwd()
+
     ALP0 = np.array(ALP0)
     BET0 = np.array(BET0)
     LAM0 = np.array(LAM0)
@@ -67,20 +71,35 @@ def makeHeatMap(ALP0, BET0, LAM0, data, dataName):
     plt.xticks(ticks=np.arange(len(unique_ALP0)), labels=unique_ALP0)
     plt.yticks(ticks=np.arange(len(unique_BET0)), labels=unique_BET0)
     plt.imshow(heatmap, aspect='auto', origin='lower', cmap='viridis')
-    plt.colorbar(label="Minimal distance [BL]")
+    plt.colorbar(label=label_for_indicator)
     plt.grid(False)
 
     # Show the plot
-    plt.show()
+    # plt.show()
+    root = os.getcwd()
+    plot_dir = os.path.join(root, 'plot_data', f"LAM0_{LAM0}")
+    os.makedirs(plot_dir, exist_ok=True)  # Create directory if it doesn't exist
 
+    # Define the file path
+    file_path = os.path.join(plot_dir, f"{dataName}_heatmap.png")
+    plt.savefig(file_path, bbox_inches='tight')
+    plt.close()
 
+def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization):
+    side_len_a = 10
+    side_len_b = 10
+    grid_size = side_len_a * side_len_b
 
+    for i in range(0, len(LAM0)//grid_size):
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], minDist[i*grid_size:(i+1)*grid_size], "minimal observed distance", "Distance [BL]")
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgMinDist[i*grid_size:(i+1)*grid_size], "average minimal observed distance", "Distance [BL]")
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], polarization[i*grid_size:(i+1)*grid_size], " polarization", "Polarization []")
 
+def printOnlyValid(LAM0, ALP0, BET0, minDist, avgMinDist, polarization):
 
-
-
-
-
+    for i in range(len(LAM0)):
+        if minDist[i]>=3 and avgMinDist[i]<=10:
+            print(f"LAM0: {LAM0[i]}, ALP0: {ALP0[i]}, BET0: {BET0[i]}, minDist: {minDist[i]}, avgMinDist: {avgMinDist[i]}, polarization: {polarization[i]})")
 
 
 if __name__=="__main__":
@@ -89,70 +108,10 @@ if __name__=="__main__":
 
     LAM0, ALP0, BET0, minDist, avgMinDist, polarization = map(list, zip(*sorted_data))
 
-    for i in range(0, len(LAM0)//25):
-        makeHeatMap(ALP0[i*25:(i+1)*25], BET0[i*25:(i+1)*25], LAM0[i*25:(i+1)*25][0], minDist[i*25:(i+1)*25], "minimal observed distance")
-        break
+    # print(len(LAM0))
 
+    # saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization)
 
+    printOnlyValid(LAM0, ALP0, BET0, minDist, avgMinDist, polarization)
+        
 
-
-
-# # Example data generation (you will replace these with your actual data)
-# alpha_0 = np.logspace(-2, 1, 20)  # y-axis values
-# print(alpha_0)
-# exit()
-# beta_0 = np.logspace(-2, 1, 20)   # x-axis values
-# data1 = np.random.rand(len(alpha_0), len(beta_0)) * 10  # First heatmap
-# data2 = np.random.rand(len(alpha_0), len(beta_0)) * 2   # Second heatmap
-
-# # Create the figure and axes
-# fig, ax = plt.subplots(figsize=(12, 6))
-
-# # Plot the first heatmap
-# heatmap1 = ax.imshow(
-#     data1,
-#     extent=[beta_0[0], beta_0[-1], alpha_0[0], alpha_0[-1]],
-#     aspect='auto',
-#     origin='lower',
-#     norm=LogNorm(vmin=1, vmax=10),  # Log scale for color normalization
-#     cmap='inferno'
-# )
-
-# # Overlay hatching (adjust conditions as per your requirement)
-# hatch_condition = (data1 < 1)  # Example condition for hatching
-# for i in range(len(alpha_0) - 1):  # Exclude last index for alpha_0
-#     for j in range(len(beta_0) - 1):  # Exclude last index for beta_0
-#         if hatch_condition[i, j]:
-#             ax.add_patch(plt.Rectangle(
-#                 (beta_0[j], alpha_0[i]),  # Bottom-left corner
-#                 beta_0[j+1] - beta_0[j],  # Width
-#                 alpha_0[i+1] - alpha_0[i],  # Height
-#                 fill=False, hatch='//', edgecolor='green'
-#             ))
-
-# # Add a colorbar for the first heatmap
-# cbar1 = plt.colorbar(heatmap1, ax=ax, orientation='vertical', pad=0.02)
-# cbar1.set_label("10BL")
-
-# # Plot the second heatmap in the same region
-# heatmap2 = ax.imshow(
-#     data2,
-#     extent=[beta_0[0], beta_0[-1], alpha_0[0], alpha_0[-1]],
-#     aspect='auto',
-#     origin='lower',
-#     norm=LogNorm(vmin=1, vmax=2),  # Adjust limits as needed
-#     cmap='inferno'
-# )
-
-# # Add a colorbar for the second heatmap
-# cbar2 = plt.colorbar(heatmap2, ax=ax, orientation='vertical', pad=0.2)
-# cbar2.set_label("2BL")
-
-# # Format axes
-# ax.set_xscale('log')
-# ax.set_yscale('log')
-# ax.set_xlabel(r"$\beta_0$")
-# ax.set_ylabel(r"$\alpha_0$")
-# ax.set_title("Minimal distance")
-
-# plt.show()
