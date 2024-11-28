@@ -13,20 +13,6 @@ from numba import cuda, float32
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-
-            # v_integral_by_dphi[i] = self.ALP0 * integral_dvel * np.sin(angle_z_to_theta) #only the -V part for testing
-            # psi_integral_by_dphi[i] = self.BET0 * integral_dpsi * np.sin(angle_z_to_theta)
-            # v_z_integral_by_dphi[i] = self.LAM0 * integral_dv_z* np.sin(angle_z_to_theta)
-
-            # v_integral_by_dphi[i] = self.ALP0 * (self.ALP1_LR * (self.cos_phi * G_spike).sum()) * np.sin(angle_z_to_theta) #onlu The LR part for testing
-            # psi_integral_by_dphi[i] = self.BET0 * (self.BET1_LR * (self.sin_phi * G_spike).sum()) * np.sin(angle_z_to_theta)
-            # v_z_integral_by_dphi[i] = self.LAM0 * (self.LAM1_LR * G_spike.sum()) * np.sin(angle_z_to_theta)
-
-            # v_integral_by_dphi[i] = self.ALP0 * (self.ALP1_UD * (self.cos_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta) #only the UD part for testing
-            # psi_integral_by_dphi[i] = self.BET0 * (self.BET1_UD * (self.sin_phi * (dTheta_V**2)).sum()) * np.sin(angle_z_to_theta)
-            # v_z_integral_by_dphi[i] = self.LAM0 * (self.LAM1_UD * (dTheta_V**2).sum()) * np.sin(angle_z_to_theta)
-
-
 ALP0 = 1.0
 ALP1_LR = 0.08
 ALP1_UD = 0.
