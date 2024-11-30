@@ -64,7 +64,7 @@ def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_lim
             mask = (ALP0 == alp) & (BET0 == bet)
             if mask.any():
                 value = data[mask][0]
-                if upper_limit is not None and value > upper_limit:  # **Check upper limit**
+                if (upper_limit is not None and value > upper_limit) or value is None:  # **Check upper limit**
                     mask_invalid[j, i] = True  # **Mark as invalid**
                 else:
                     heatmap[j, i] = value
@@ -73,7 +73,7 @@ def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_lim
 
     # Create the heatmap
     plt.figure(figsize=(12, 9))
-    plt.title(f"Heatmap of {dataName} based on ALP0, BET0 and for LAM0 =  {LAM0}, eq = 12.5 BL")
+    plt.title(f"Heatmap of {dataName} based on ALP0, BET0 and for LAM0 =  {LAM0}, eq = 6.25 BL")
     plt.xlabel("ALP0 []")
     plt.ylabel("BET0 []")
     plt.xticks(ticks=np.arange(len(unique_ALP0)), labels=unique_ALP0)
@@ -98,16 +98,31 @@ def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_lim
     plt.savefig(file_path, bbox_inches='tight')
     plt.close()
 
-def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist):
+def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist, banOne_banALL=False):
     side_len_a = 10
     side_len_b = 10
     grid_size = side_len_a * side_len_b
 
+    minDistAllowed = 10.
+    avgMinDistAllowed = 30.
+    avgDistAllowed = 100.
+
+
+
+    if banOne_banALL:
+        for i in range(len(minDist)):
+            if minDist[i]>minDistAllowed or avgMinDist[i]>avgDistAllowed or avgDist[i]>avgDistAllowed:
+                minDist[i] = None
+                avgMinDist[i] = None
+                avgDist[i] = None
+                polarization[i] = None
+
+
     for i in range(0, len(LAM0)//grid_size):
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], minDist[i*grid_size:(i+1)*grid_size], "minimal observed distance", "Distance [BL]", 10.)
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgMinDist[i*grid_size:(i+1)*grid_size], "average minimal observed distance", "Distance [BL]", 30.)
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], polarization[i*grid_size:(i+1)*grid_size], " polarization", "Polarization []", 1.)
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgDist[i*grid_size:(i+1)*grid_size], " avgDist", "avgDist [BL]", 30.)
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], minDist[i*grid_size:(i+1)*grid_size], "minimal observed distance", "Distance [BL]", minDistAllowed)
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgMinDist[i*grid_size:(i+1)*grid_size], "average minimal observed distance", "Distance [BL]", avgMinDistAllowed)
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], polarization[i*grid_size:(i+1)*grid_size], " polarization", "Polarization []")
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgDist[i*grid_size:(i+1)*grid_size], " avgDist", "avgDist [BL]", avgDistAllowed)
 
 def printOnlyValid(LAM0, ALP0, BET0, minDist, avgMinDist, polarization):
 
@@ -124,7 +139,7 @@ if __name__=="__main__":
 
     # print(len(LAM0))
 
-    saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist)
+    saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist, banOne_banALL=True)
 
     # printOnlyValid(LAM0, ALP0, BET0, minDist, avgMinDist, polarization)
         

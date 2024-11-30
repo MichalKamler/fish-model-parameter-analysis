@@ -46,6 +46,10 @@ BOX_LENGTH = 20. #m
 BOX_HEIGHT = 10. #m
 BOX_DIST_FROM_GROUND = 1. #m
 
+BLACKEN_V_FIELD = np.pi/2
+
+UPDATE_FIELD_ONLY_CLOSER_THAN_10 = True
+
 PI = math.pi
 PI_2 = PI / 2
 
@@ -346,7 +350,10 @@ class drone:
         phi = np.arctan2(xy_local[1], xy_local[0])
         theta = np.arcsin(relative_z / dist)
         alpha = np.arctan(R/dist)
-        self.V.setSphereCap(phi, theta, alpha)
+        if UPDATE_FIELD_ONLY_CLOSER_THAN_10 and dist<=10.:
+            self.V.setSphereCap(phi, theta, alpha)
+        else:
+            self.V.setSphereCap(phi, theta, alpha)
         return
 
 class simulation:
@@ -423,19 +430,19 @@ class simulation:
             if USE_BOUNDARY_BOX:
 
                 if x_i >= BOX_WIDTH/2:
-                    drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=BLACKEN_V_FIELD)
                 elif x_i <= -BOX_WIDTH/2:
-                    drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=BLACKEN_V_FIELD)
 
                 if y_i >= BOX_LENGTH/2:
-                    drone.V.setSphereCap(phi_center=np.pi/2, theta_center=0., alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=np.pi/2, theta_center=0., alpha=BLACKEN_V_FIELD)
                 elif y_i <= -BOX_LENGTH/2:
-                    drone.V.setSphereCap(phi_center=-np.pi/2, theta_center=0., alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=-np.pi/2, theta_center=0., alpha=BLACKEN_V_FIELD)
                 
                 if z_i >= BOX_HEIGHT+BOX_DIST_FROM_GROUND:
-                    drone.V.setSphereCap(phi_center=0., theta_center=np.pi/2, alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=0., theta_center=np.pi/2, alpha=BLACKEN_V_FIELD)
                 elif z_i <= BOX_DIST_FROM_GROUND:
-                    drone.V.setSphereCap(phi_center=0., theta_center=-np.pi/2, alpha=np.pi/4)
+                    drone.V.setSphereCap(phi_center=0., theta_center=-np.pi/2, alpha=BLACKEN_V_FIELD)
     
     def updateDronesPosition(self):
         for drone in self.drones:
