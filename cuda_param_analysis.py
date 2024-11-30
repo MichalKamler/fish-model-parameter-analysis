@@ -51,6 +51,30 @@ PI_2 = PI / 2
 
 USE_GPU = True
 
+if USE_GPU:
+    phi_lin_spaced = np.linspace(-np.pi, np.pi, PHI_SIZE).astype(np.float32)
+    theta_lin_spaced = np.linspace(-np.pi / 2, np.pi / 2, THETA_SIZE).astype(np.float32)
+
+    cos_phi = np.cos(phi_lin_spaced).astype(np.float32)
+    sin_phi = np.sin(phi_lin_spaced).astype(np.float32)
+    cos_theta = np.cos(theta_lin_spaced).astype(np.float32)
+    sin_theta = np.sin(theta_lin_spaced).astype(np.float32)
+
+    theta_indices = np.arange(THETA_SIZE)
+    angle_z_to_theta = np.pi - theta_indices * (np.pi / (THETA_SIZE - 1))
+    sin_angle_z_to_theta = np.sin(angle_z_to_theta)
+
+    cos_phi_device = cuda.to_device(cos_phi.astype(np.float32))
+    sin_phi_device = cuda.to_device(sin_phi.astype(np.float32))
+    sin_angle_z_to_theta_device = cuda.to_device(sin_angle_z_to_theta.astype(np.float32))
+    cos_theta_device = cuda.to_device(cos_theta.astype(np.float32))
+    sin_theta_device = cuda.to_device(sin_theta.astype(np.float32))
+
+    v_integral_by_dphi_device = cuda.to_device(np.zeros(THETA_SIZE, dtype=np.float32))
+    psi_integral_by_dphi_device = cuda.to_device(np.zeros(THETA_SIZE, dtype=np.float32))
+    vz_integral_by_dphi_device = cuda.to_device(np.zeros(THETA_SIZE, dtype=np.float32))
+
+
 class drone: 
     def __init__(self, x: float, y: float, z: float, psi: float =None, 
                     PHI_SIZE: int =PHI_SIZE, THETA_SIZE: int =THETA_SIZE,
@@ -78,13 +102,13 @@ class drone:
 
         self.V = VisualField(PHI_SIZE, THETA_SIZE, True) 
 
-        phi_lin_spaced = np.linspace(-np.pi, np.pi, PHI_SIZE)
-        theta_lin_spaced = np.linspace(-np.pi / 2, np.pi / 2, THETA_SIZE)
+        phi_lin_spaced = np.linspace(-np.pi, np.pi, PHI_SIZE).astype(np.float32)
+        theta_lin_spaced = np.linspace(-np.pi / 2, np.pi / 2, THETA_SIZE).astype(np.float32)
 
-        self.cos_phi = np.cos(phi_lin_spaced)
-        self.sin_phi = np.sin(phi_lin_spaced)
-        self.cos_theta = np.cos(theta_lin_spaced)
-        self.sin_theta = np.sin(theta_lin_spaced)
+        self.cos_phi = np.cos(phi_lin_spaced).astype(np.float32)
+        self.sin_phi = np.sin(phi_lin_spaced).astype(np.float32)
+        self.cos_theta = np.cos(theta_lin_spaced).astype(np.float32)
+        self.sin_theta = np.sin(theta_lin_spaced).astype(np.float32)
 
         if psi==None: #psi is direction of velocity in global coords
             self.psi = 0.0
@@ -98,12 +122,20 @@ class drone:
         angle_z_to_theta = np.pi - theta_indices * (np.pi / (self.THETA_SIZE - 1))
         self.sin_angle_z_to_theta = np.sin(angle_z_to_theta)
 
-        if USE_GPU:
-            self.cos_phi_device = cuda.to_device(self.cos_phi.astype(np.float32))
-            self.sin_phi_device = cuda.to_device(self.sin_phi.astype(np.float32))
-            self.sin_angle_z_to_theta_device = cuda.to_device(self.sin_angle_z_to_theta.astype(np.float32))
-            self.cos_theta_device = cuda.to_device(self.cos_theta.astype(np.float32))
-            self.sin_theta_device = cuda.to_device(self.sin_theta.astype(np.float32))
+        # if USE_GPU:
+            
+
+            # self.ALP0_device, self.ALP1_LR_device, self.ALP1_UD_device = cuda.to_device(np.array([ALP0], dtype=np.float32)), cuda.to_device(np.array([ALP1_LR], dtype=np.float32)), cuda.to_device(np.array([ALP1_UD], dtype=np.float32))
+            # self.BET0_device, self.BET1_LR_device, self.BET1_UD_device = cuda.to_device(np.array([BET0], dtype=np.float32)), cuda.to_device(np.array([BET1_LR], dtype=np.float32)), cuda.to_device(np.array([BET1_UD], dtype=np.float32))
+            # self.LAM0_device, self.LAM1_LR_device, self.LAM1_UD_device = cuda.to_device(np.array([LAM0], dtype=np.float32)), cuda.to_device(np.array([LAM1_LR], dtype=np.float32)), cuda.to_device(np.array([LAM1_UD], dtype=np.float32))
+
+            # self.d_phi_device, self.d_theta_device = cuda.to_device(np.array([self.d_phi], dtype=np.float32)), cuda.to_device(np.array([self.d_theta], dtype=np.float32))
+            # self.GAM_device, self.V0_device = cuda.to_device(np.array([GAM], dtype=np.float32)), cuda.to_device(np.array([V0], dtype=np.float32))
+
+            # self.PHI_SIZE_device, self.THETA_SIZE_device = cuda.to_device(np.array([PHI_SIZE], dtype=np.int32)), cuda.to_device(np.array([PHI_SIZE], dtype=np.int32))
+
+            # Allocate device memory for output arrays
+            
     
     def dPhi_V_of(self, V: npt.ArrayLike) -> npt.ArrayLike:
         # Compute circular differences directly without padding
@@ -128,8 +160,12 @@ class drone:
     def compute_state_kernel(V_field, cos_phi, sin_phi, sin_angle_z_to_theta, cos_theta, sin_theta,
                             ALP0, ALP1_LR, ALP1_UD, BET0, BET1_LR, BET1_UD, LAM0, LAM1_LR, LAM1_UD,
                             d_phi, d_theta, GAM, V0, velocity_norm,
-                            v_integral_out, psi_integral_out, vz_integral_out, PHI_SIZE, THETA_SIZE):
-        row, col = cuda.grid(2)  # 2D grid indices: row (theta), col (phi)
+                            v_integral_by_dphi_device, psi_integral_by_dphi_device, vz_integral_by_dphi_device, PHI_SIZE, THETA_SIZE):
+        # row, col = cuda.grid(2)  # 2D grid indices: row (theta), col (phi)
+        col = cuda.threadIdx.x
+        row = cuda.blockIdx.x
+
+        # row, col = cuda.grid(2)
 
         # Shared memory for reduction across the row (phi axis)
         smem_dvel = cuda.shared.array(256, dtype=float32)
@@ -154,9 +190,9 @@ class drone:
             integrand_dpsi = G_rc * sin_phi[col]
             integrand_dvz = G_rc
 
-            smem_dvel[cuda.threadIdx.x] = integrand_dvel
-            smem_dpsi[cuda.threadIdx.x] = integrand_dpsi
-            smem_dvz[cuda.threadIdx.x] = integrand_dvz
+            smem_dvel[col] = integrand_dvel
+            smem_dpsi[col] = integrand_dpsi
+            smem_dvz[col] = integrand_dvz
             cuda.syncthreads()
 
             integral_dvel = 0.0
@@ -179,49 +215,63 @@ class drone:
             integral_dpsi *= d_phi
             integral_dvz *= d_phi
 
-            cuda.atomic.add(v_integral_out, row, ALP0 * (integral_dvel + ALP1_LR * G_spike_rc * cos_phi[col] + ALP1_UD * G_spike_UD_rc * cos_phi[col]) * sin_angle_z_to_theta[row])
+            cuda.atomic.add(v_integral_by_dphi_device, row, ALP0 * (integral_dvel + ALP1_LR * G_spike_rc * cos_phi[col] + ALP1_UD * G_spike_UD_rc * cos_phi[col]) * sin_angle_z_to_theta[row])
 
-            cuda.atomic.add(psi_integral_out, row, BET0 * (integral_dpsi + BET1_LR * G_spike_rc * sin_phi[col] + BET1_UD * G_spike_UD_rc * sin_phi[col]) * sin_angle_z_to_theta[row])
+            cuda.atomic.add(psi_integral_by_dphi_device, row, BET0 * (integral_dpsi + BET1_LR * G_spike_rc * sin_phi[col] + BET1_UD * G_spike_UD_rc * sin_phi[col]) * sin_angle_z_to_theta[row])
 
-            cuda.atomic.add(vz_integral_out, row, LAM0 * (integral_dvz + LAM1_LR * G_spike_rc + LAM1_UD * G_spike_UD_rc) * sin_angle_z_to_theta[row])
+            # cuda.atomic.add(psi_integral_by_dphi_device, row, BET0)
+
+            cuda.atomic.add(vz_integral_by_dphi_device, row, LAM0 * (integral_dvz + LAM1_LR * G_spike_rc + LAM1_UD * G_spike_UD_rc) * sin_angle_z_to_theta[row])
 
     def compute_state_variables_3d_on_gpu(self):
         # Allocate GPU memory for input arrays
+
+        # cos_phi_device = cuda.to_device(self.cos_phi.astype(np.float32))
+        # sin_phi_device = cuda.to_device(self.sin_phi.astype(np.float32))
+        # sin_angle_z_to_theta_device = cuda.to_device(self.sin_angle_z_to_theta.astype(np.float32))
+        # cos_theta_device = cuda.to_device(self.cos_theta.astype(np.float32))
+        # sin_theta_device = cuda.to_device(self.sin_theta.astype(np.float32))
+
         V_field_device = cuda.to_device(self.V.field.astype(np.float32))
+        
+        velocity_norm_device = cuda.to_device(np.array([self.velocity_norm]).astype(np.float32))
 
-        # Allocate device memory for output arrays
-        v_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
-        psi_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
-        vz_integral_device = cuda.device_array(self.THETA_SIZE, dtype=np.float32)
+        v_integral_by_dphi_device[:] = 0.
+        psi_integral_by_dphi_device[:] = 0.
+        vz_integral_by_dphi_device[:] = 0.
 
+        # self.v_integral_by_dphi_device = cuda.to_device(np.zeros(self.THETA_SIZE, dtype=np.float32))
+        # self.psi_integral_by_dphi_device = cuda.to_device(np.zeros(self.THETA_SIZE, dtype=np.float32))
+        # self.vz_integral_by_dphi_device = cuda.to_device(np.zeros(self.THETA_SIZE, dtype=np.float32))
+        
         # Kernel launch configuration
-        threads_per_block = (self.PHI_SIZE, 1)  # 256 threads in x - one thread per phi in one row
-        blocks_per_grid = (self.THETA_SIZE, 1) # 128 blocks in y (one block per row)
-
+        threads_per_block = (256, 1)  # 256 threads in the x-direction (columns), 1 thread in the y-direction (rows)
+        blockspergrid_x = 128  # One block for each row
+        blockspergrid_y = 1    # Only one block in the y-direction (since each block covers one row)
+        blocks_per_grid = (blockspergrid_x, blockspergrid_y)
         # Launch the kernel
+        cuda.synchronize()
         self.compute_state_kernel[blocks_per_grid, threads_per_block](
-            V_field_device, self.cos_phi_device, self.sin_phi_device, self.sin_angle_z_to_theta_device,
-            self.cos_theta_device, self.sin_theta_device, self.ALP0, self.ALP1_LR, self.ALP1_UD,
+            V_field_device, cos_phi_device, sin_phi_device, sin_angle_z_to_theta_device,
+            cos_theta_device, sin_theta_device, self.ALP0, self.ALP1_LR, self.ALP1_UD,
             self.BET0, self.BET1_LR, self.BET1_UD, self.LAM0, self.LAM1_LR, self.LAM1_UD,
-            self.d_phi, self.d_theta, self.GAM, self.V0, self.velocity_norm,
-            v_integral_device, psi_integral_device, vz_integral_device, self.PHI_SIZE, self.THETA_SIZE)
+            self.d_phi, self.d_theta, self.GAM, self.V0, velocity_norm_device,
+            v_integral_by_dphi_device, psi_integral_by_dphi_device, vz_integral_by_dphi_device, self.PHI_SIZE, self.THETA_SIZE)
+        cuda.synchronize()
 
         # Copy results back to host
-        v_integral = v_integral_device.copy_to_host()
-        psi_integral = psi_integral_device.copy_to_host()
-        vz_integral = vz_integral_device.copy_to_host()
-        print(f"gpu part of v_integral: {v_integral.sum():.5f}")
-        print(f"gpu part of psi_integral: {psi_integral.sum():.5f}")
-        print(f"gpu part of vz_integral: {vz_integral.sum():.5f}")
+        v_integral_by_dphi = v_integral_by_dphi_device.copy_to_host()
+        psi_integral_by_dphi = psi_integral_by_dphi_device.copy_to_host()
+        vz_integral_by_dphi = vz_integral_by_dphi_device.copy_to_host()
 
         # Compute final results on the host
-        v_integral *= self.cos_theta
-        psi_integral *= self.cos_theta
-        vz_integral *= self.sin_theta
+        v_integral_by_dphi *= self.cos_theta
+        psi_integral_by_dphi *= self.cos_theta
+        vz_integral_by_dphi *= self.sin_theta
 
-        dvel = self.d_theta * (0.5 * v_integral[0] + v_integral[1:-1].sum() + 0.5 * v_integral[-1])
-        dpsi = self.d_theta * (0.5 * psi_integral[0] + psi_integral[1:-1].sum() + 0.5 * psi_integral[-1])
-        dv_z = self.d_theta * (0.5 * vz_integral[0] + vz_integral[1:-1].sum() + 0.5 * vz_integral[-1])
+        dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:-1].sum() + 0.5 * v_integral_by_dphi[-1])
+        dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:-1].sum() + 0.5 * psi_integral_by_dphi[-1])
+        dv_z = self.d_theta * (0.5 * vz_integral_by_dphi[0] + vz_integral_by_dphi[1:-1].sum() + 0.5 * vz_integral_by_dphi[-1])
 
         dvel += self.GAM * (self.V0 - self.velocity_norm)
 
@@ -251,10 +301,6 @@ class drone:
             v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
             psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
             v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
-
-        print(f"cpu part of v_integral_by_dphi: {v_integral_by_dphi.sum():.5f}")
-        print(f"cpu part of psi_integral_by_dphi: {psi_integral_by_dphi.sum():.5f}")
-        print(f"cpu part of v_z_integral_by_dphi: {v_z_integral_by_dphi.sum():.5f}")
 
         v_integral_by_dphi *= self.cos_theta
         psi_integral_by_dphi *= self.cos_theta
@@ -378,7 +424,6 @@ class simulation:
 
                 if x_i >= BOX_WIDTH/2:
                     drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=np.pi/4)
-                    print("setting v field")
                 elif x_i <= -BOX_WIDTH/2:
                     drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=np.pi/4)
 
@@ -399,24 +444,24 @@ class simulation:
     def updateDronesStateVar(self):
         for drone in self.drones:
 
-            # if USE_GPU:
-            #     dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
-            # else:
-            #     dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+            if USE_GPU:
+                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
+            else:
+                dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
             # print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
-            start_time = time.time()
-            dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
-            end_time = time.time()
-            old_ver_time = end_time-start_time
-            print(f"compute_state_variables_3d executed in {old_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
+            # start_time = time.time()
+            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
+            # end_time = time.time()
+            # old_ver_time = end_time-start_time
+            # print(f"compute_state_variables_3d_gpu executed in {old_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
-            start_time = time.time()
-            dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
-            end_time = time.time()
-            new_ver_time = end_time-start_time
-            print(f"compute_state_variables_3d_new executed in {new_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
-            print(f"cpu version is this much worse: {new_ver_time-old_ver_time:.5f}")
+            # start_time = time.time()
+            # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+            # end_time = time.time()
+            # new_ver_time = end_time-start_time
+            # print(f"compute_state_variables_3d_cpu executed in {new_ver_time:.5f} seconds. dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
+            # print(f"cpu version is this much worse: {new_ver_time-old_ver_time:.5f}")
 
 
 
@@ -746,39 +791,6 @@ def test(x, y, z):
     drone1.V.plotVisualField()
 
 if __name__ == "__main__":
-    # log.basicConfig(level=log.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    # V = VisualField(PHI_SIZE, THETA_SIZE, simplet_V_field=True)
-    # V.setSphereCap(0, -PI_2, PI/4)
-    # V.plotVisualField()
-
-    # drone1 = drone(0, 0, 0)
-    # for i in range(30):
-    #     drone1.updateVelocity(1, 0, 0)
-    #     print("time: ", i*1/30, "position: ", drone1.velocity[0], drone1.velocity[1], drone1.velocity[2])
-
-    # x = 0.
-    # y = 0.
-    # z = 1.
-    # test(x, y, z)
-    # exit()
-
-    # sim for alpha1 bet1 and lam1 is 12.5 BL
-
-
-    # alp0 = [0.02, 0.1, 0.5, 2, 10]
-    # bet0 = [0.02, 0.1, 0.5, 2, 10]
-    # lam0 = [0.02, 0.1, 0.5, 2, 10]
-
-
-    # start_time = time.time()
-    # sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=False)
-    # sim.simulate()
-    # end_time = time.time()
-    # print(f"Function executed in {end_time-start_time:.6f} seconds.")
-
-    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=1, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=0.1, bet0=0.1, lam0=0.1)
-    sim.simulate()
-    exit()
 
     alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
     bet0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
