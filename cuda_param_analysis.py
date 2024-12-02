@@ -54,7 +54,7 @@ MAX_ROT_VEL = 1. # rad/s
 
 BLACKEN_V_FIELD = np.pi/4
 
-UPDATE_FIELD_ONLY_CLOSER_THAN_10 = True
+UPDATE_FIELD_ONLY_CLOSER_THAN_10 = False
 
 PI = math.pi
 PI_2 = PI / 2

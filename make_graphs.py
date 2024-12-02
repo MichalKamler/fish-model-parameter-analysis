@@ -15,7 +15,7 @@ def loadCsvData():
     minDist, avgMinDist, polarization, avgDist = [], [], [], []
 
     # Open and read the CSV file
-    with open('data.csv', 'r') as file:
+    with open('data_see_only_under_10.csv', 'r') as file:
         reader = csv.reader(file)
         for row in reader:
             # Convert the data from strings to floats
@@ -109,13 +109,13 @@ def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist, b
 
 
 
-    if banOne_banALL:
-        for i in range(len(minDist)):
-            if minDist[i]>minDistAllowed or avgMinDist[i]>avgDistAllowed or avgDist[i]>avgDistAllowed:
-                minDist[i] = None
-                avgMinDist[i] = None
-                avgDist[i] = None
-                polarization[i] = None
+    # if banOne_banALL:
+    #     for i in range(len(minDist)):
+    #         if minDist[i]>minDistAllowed or avgMinDist[i]>avgDistAllowed or avgDist[i]>avgDistAllowed:
+    #             minDist[i] = None
+    #             avgMinDist[i] = None
+    #             avgDist[i] = None
+    #             polarization[i] = None
 
 
     for i in range(0, len(LAM0)//grid_size):
