@@ -42,15 +42,21 @@ SIM_TIME = 300.0 #s
 SIM_START_COLLECT_DATA = 100.0 #s 
 SPAWN_DIST = 5 #m
 
-USE_BOUNDARY_BOX = True
-BOX_WIDTH = 20. #m
-BOX_LENGTH = 20. #m
+USE_BOUNDARY_BOX_ONLY_Z = True
+USE_BOUNDARY_BOX = False
+BOX_WIDTH = 40. #m
+BOX_LENGTH = 40. #m
 BOX_HEIGHT = 10. #m
 BOX_DIST_FROM_GROUND = 1. #m
 
+
 MAX_XY_VEL = 1.5 # m/s
 MAX_Z_VEL = 0.5 # m/s
-MAX_ROT_VEL = 1. # rad/s
+MAX_ROT_VEL = np.pi/2 # rad/s - can rotate 90 deg in 1s
+
+MAX_XY_ACCELERATION_UPDATE = 1. / SIM_RATE
+MAX_Z_ACCELERATION_UPDATE = 0.5 / SIM_RATE
+MAX_ROT_VEL_UPDATE = MAX_ROT_VEL / SIM_RATE
 
 BLACKEN_V_FIELD = np.pi/4
 
@@ -84,6 +90,11 @@ if USE_GPU:
     psi_integral_by_dphi_device = cuda.to_device(np.zeros(THETA_SIZE, dtype=np.float32))
     vz_integral_by_dphi_device = cuda.to_device(np.zeros(THETA_SIZE, dtype=np.float32))
 
+def modified_cos(x):
+    return 1 / (1 + np.exp(-10 * np.cos(x)))
+
+def modified_sin(x):
+    return 1 / (1 + np.exp(-10 * np.sin(x)))
 
 class drone: 
     def __init__(self, x: float, y: float, z: float, psi: float =None, 
@@ -132,6 +143,15 @@ class drone:
         angle_z_to_theta = np.pi - theta_indices * (np.pi / (self.THETA_SIZE - 1))
         self.sin_angle_z_to_theta = np.sin(angle_z_to_theta)
 
+        self.sin_block = np.where(x < 0, -1, 1)
+        self.cos_block = np.where(x < -np.pi / 2, -1, 
+                         np.where(x <= np.pi / 2, 1, -1))
+        
+        self.modified_cos_phi = modified_cos(phi_lin_spaced)
+        self.modified_cos_theta = modified_cos(theta_lin_spaced)
+        self.modified_sin_phi = modified_sin(phi_lin_spaced)
+        self.modified_sin_theta = modified_sin(theta_lin_spaced)
+
         # if USE_GPU:
             
 
@@ -171,11 +191,12 @@ class drone:
                             ALP0, ALP1_LR, ALP1_UD, BET0, BET1_LR, BET1_UD, LAM0, LAM1_LR, LAM1_UD,
                             d_phi, d_theta, GAM, V0, velocity_norm,
                             v_integral_by_dphi_device, psi_integral_by_dphi_device, vz_integral_by_dphi_device, PHI_SIZE, THETA_SIZE):
-        # row, col = cuda.grid(2)  # 2D grid indices: row (theta), col (phi)
+        #works
         col = cuda.threadIdx.x
         row = cuda.blockIdx.x
 
-        # row, col = cuda.grid(2)
+        # col = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+        # row = cuda.blockIdx.y
 
         # Shared memory for reduction across the row (phi axis)
         smem_dvel = cuda.shared.array(256, dtype=float32)
@@ -253,10 +274,32 @@ class drone:
         # self.vz_integral_by_dphi_device = cuda.to_device(np.zeros(self.THETA_SIZE, dtype=np.float32))
         
         # Kernel launch configuration
-        threads_per_block = (256, 1)  # 256 threads in the x-direction (columns), 1 thread in the y-direction (rows)
-        blockspergrid_x = 128  # One block for each row
+        # threads_per_block = (256, 1)  # 256 threads in the x-direction (columns), 1 thread in the y-direction (rows)
+        # blockspergrid_x = 128  # One block for each row
+        # blockspergrid_y = 1    # Only one block in the y-direction (since each block covers one row)
+        # blocks_per_grid = (blockspergrid_x, blockspergrid_y)
+
+        threads_per_block = (PHI_SIZE, 1)  # 256 threads in the x-direction (columns), 1 thread in the y-direction (rows)
+        blockspergrid_x = THETA_SIZE  # One block for each row
         blockspergrid_y = 1    # Only one block in the y-direction (since each block covers one row)
         blocks_per_grid = (blockspergrid_x, blockspergrid_y)
+
+
+
+        #also works, but it is not neccesary
+        # n_cols = 256
+        # n_rows = 128
+
+        # threads_per_block_x = min(256, n_cols)  # Cap threads per block to 256 or less
+        # threads_per_block_y = 1  # Keep single thread in y-direction
+        # threads_per_block = (threads_per_block_x, threads_per_block_y)
+
+        # blockspergrid_x = (n_cols + threads_per_block_x - 1) // threads_per_block_x  # Divide columns by threads per block
+        # blockspergrid_y = n_rows  # One block for each row
+        # blocks_per_grid = (blockspergrid_x, blockspergrid_y)
+
+        # print(blocks_per_grid, threads_per_block)
+
         # Launch the kernel
         cuda.synchronize()
         self.compute_state_kernel[blocks_per_grid, threads_per_block](
@@ -294,6 +337,7 @@ class drone:
             V_row = self.V.field[i, :].astype(float)
             dPhi_V = self.dPhi_V_of(V_row)
             dTheta_V = self.dTheta_V_of(i)
+            # print(V_row.sum(), dPhi_V.sum(), dTheta_V.sum())
 
             G = -V_row
             G_spike = dPhi_V**2
@@ -306,6 +350,51 @@ class drone:
             integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
             integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
 
+            # print(integral_dvel, integral_dpsi, integral_dv_z)
+
+            v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
+            v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
+            
+            # print(v_integral_by_dphi[i], v_integral_by_dphi[i], v_z_integral_by_dphi[i])
+
+
+        v_integral_by_dphi *= self.cos_theta
+        psi_integral_by_dphi *= self.cos_theta
+        v_z_integral_by_dphi *= self.sin_theta
+
+        dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_integral_by_dphi[self.THETA_SIZE - 1])
+        dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * psi_integral_by_dphi[self.THETA_SIZE - 1])
+        dv_z = self.d_theta * (0.5 * v_z_integral_by_dphi[0] + v_z_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_z_integral_by_dphi[self.THETA_SIZE - 1])
+
+        dvel += self.GAM * (self.V0 - self.velocity_norm)
+
+        return dvel, dpsi, dv_z
+    
+    def compute_state_variables_3d_on_cpu_no_sincos(self):
+        v_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        psi_integral_by_dphi = np.zeros(self.THETA_SIZE)
+        v_z_integral_by_dphi = np.zeros(self.THETA_SIZE)
+
+        for i in range(self.THETA_SIZE):
+            V_row = self.V.field[i, :].astype(float)
+            dPhi_V = self.dPhi_V_of(V_row)
+            dTheta_V = self.dTheta_V_of(i)
+
+            G = -V_row
+            G_spike = dPhi_V**2
+            G_spike_UD = dTheta_V**2
+
+            integrand_dvel = G * self.cos_phi
+            integrand_dpsi = G * self.sin_phi
+
+            # integrand_dvel = G * self.modified_cos_phi
+            # integrand_dpsi = G * self.modified_sin_phi
+
+            integral_dvel = self.d_phi * (0.5 * integrand_dvel[0] + integrand_dvel[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dvel[self.PHI_SIZE - 1])
+            integral_dpsi = self.d_phi * (0.5 * integrand_dpsi[0] + integrand_dpsi[1:self.PHI_SIZE - 1].sum() + 0.5 * integrand_dpsi[self.PHI_SIZE - 1])
+            integral_dv_z = self.d_phi * (0.5 * G[0] + G[1:self.PHI_SIZE - 1].sum() + 0.5 * G[self.PHI_SIZE - 1])
+
             v_integral_by_dphi[i] = self.ALP0 * (integral_dvel + self.ALP1_LR * (self.cos_phi * G_spike).sum() + self.ALP1_UD * (self.cos_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
             psi_integral_by_dphi[i] = self.BET0 * (integral_dpsi + self.BET1_LR * (self.sin_phi * G_spike).sum() + self.BET1_UD * (self.sin_phi * (G_spike_UD)).sum()) * self.sin_angle_z_to_theta[i]
             v_z_integral_by_dphi[i] = self.LAM0 * (integral_dv_z + self.LAM1_LR * G_spike.sum() + self.LAM1_UD * (G_spike_UD).sum()) * self.sin_angle_z_to_theta[i]
@@ -313,6 +402,9 @@ class drone:
         v_integral_by_dphi *= self.cos_theta
         psi_integral_by_dphi *= self.cos_theta
         v_z_integral_by_dphi *= self.sin_theta
+        # v_integral_by_dphi *= self.modified_cos_theta
+        # psi_integral_by_dphi *= self.modified_cos_theta
+        # v_z_integral_by_dphi *= self.modified_sin_theta
 
         dvel = self.d_theta * (0.5 * v_integral_by_dphi[0] + v_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * v_integral_by_dphi[self.THETA_SIZE - 1])
         dpsi = self.d_theta * (0.5 * psi_integral_by_dphi[0] + psi_integral_by_dphi[1:self.THETA_SIZE - 1].sum() + 0.5 * psi_integral_by_dphi[self.THETA_SIZE - 1])
@@ -330,8 +422,16 @@ class drone:
         return psi
 
     def updateVelocity(self, dvel: float, dpsi: float, dvz: float) -> None:
-        self.velocity_norm += min(dvel * self.d_t, MAX_XY_VEL)
-        self.psi = max(-MAX_ROT_VEL, min(MAX_ROT_VEL, self.psi_to_bounds(self.psi + dpsi * self.d_t)))
+        # print("dvel before ", dvel*self.d_t)
+        dvel = max(-MAX_XY_ACCELERATION_UPDATE, min(MAX_XY_ACCELERATION_UPDATE, dvel*self.d_t))
+        self.velocity_norm = max(-MAX_XY_VEL, min(self.velocity_norm+dvel*self.d_t, MAX_XY_VEL))
+        # print("dvel after", dvel)
+        # self.velocity_norm += min(dvel * self.d_t, MAX_XY_VEL)
+        # print("dpsi before ", dpsi*self.d_t)
+        dpsi = max(-MAX_ROT_VEL, min(MAX_ROT_VEL, dpsi * self.d_t))
+        # print("dpsi after ", dpsi)
+        self.psi = self.psi_to_bounds(self.psi + dpsi)
+        # self.psi = max(-MAX_ROT_VEL, min(MAX_ROT_VEL, self.psi_to_bounds(self.psi + dpsi * self.d_t)))
         # print("velocity before", self.velocity, self.psi)
         self.velocity[0] = self.velocity_norm * np.cos(self.psi)
         self.velocity[1] = self.velocity_norm * np.sin(self.psi)
@@ -354,7 +454,9 @@ class drone:
         """
         input xyz are global coords of newly observed drone that I want to push into visual field  
         """
+        # print("current drone xyz: ", self.x, self.y, self.z)
         relative_xy = np.array([x - self.x, y - self.y])
+        # print(relative_xy)
         relative_z = z - self.z
         dist = np.sqrt(pow(relative_xy[0],2) + pow(relative_xy[1],2) + pow(relative_z,2))
         Rot_psi = np.array([[np.cos(self.psi), -np.sin(self.psi)],
@@ -390,10 +492,15 @@ class simulation:
     def spawn_drones(self, n_drones) -> list:
         drones_list = []
         for i in range(n_drones):
-            x = i*3
-            y = random.uniform(-3, 3)
-            z = random.uniform(0, 5)
-            drones_list.append(drone(x, y, z, np.pi/2, 
+            # x = i*3
+            # y = random.uniform(-3, 3)
+            # z = random.uniform(0, 5)
+            # psi = np.random.uniform(-np.pi, np.pi)
+            x = 0
+            y = 0 #TESTING NOW
+            z = 0
+            psi = 0
+            drones_list.append(drone(x, y, z, psi, 
                     PHI_SIZE, THETA_SIZE,
                     GAM, V0, R, SIM_RATE,
                     self.ALP0, ALP1_LR, ALP1_UD, 
@@ -418,9 +525,9 @@ class simulation:
         ax = fig.add_subplot(111, projection='3d')
         x, y, z = self.getDronesPositions()
         self.sc = ax.scatter(x, y, z, c='blue', marker='o')
-        ax.set_xlim([-250, 250])
-        ax.set_ylim([-250, 250])
-        ax.set_zlim([-20, 20])
+        ax.set_xlim([-25, 25])
+        ax.set_ylim([-25, 25])
+        ax.set_zlim([0, 15])
 
         plt.ion()  # Turn on interactive mode
         plt.show()
@@ -431,11 +538,17 @@ class simulation:
         plt.pause(0.1) 
     
     def updateVFieldForDrones(self):
+        def psi_to_bounds(psi):
+            while psi>np.pi:
+                psi -= 2*np.pi
+            while psi<=-np.pi:
+                psi += 2*np.pi
+            return psi
         x, y, z = self.getDronesPositions()
         for drone in self.drones:
             drone.setZeroVisualField()
-            x_i, y_i, z_i = drone.x, drone.y, drone.z
-
+            x_i, y_i, z_i, psi_i = drone.x, drone.y, drone.z, drone.psi
+            
             for j in range(self.N_DRONES):
                 if x[j]!=x_i and y[j]!=y_i and z[j]!=z_i:
                     drone.updateVFieldBasedOnDroneCoords(x[j], y[j], z[j])
@@ -443,20 +556,21 @@ class simulation:
             if USE_BOUNDARY_BOX:
 
                 if x_i >= BOX_WIDTH/2:
-                    drone.V.setSphereCap(phi_center=0., theta_center=0., alpha=BLACKEN_V_FIELD)
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(0.-psi_i), theta_center=0., alpha=BLACKEN_V_FIELD)
                 elif x_i <= -BOX_WIDTH/2:
-                    drone.V.setSphereCap(phi_center=np.pi, theta_center=0., alpha=BLACKEN_V_FIELD)
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(np.pi-psi_i), theta_center=0., alpha=BLACKEN_V_FIELD)
 
                 if y_i >= BOX_LENGTH/2:
-                    drone.V.setSphereCap(phi_center=np.pi/2, theta_center=0., alpha=BLACKEN_V_FIELD)
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(np.pi/2-psi_i), theta_center=0., alpha=BLACKEN_V_FIELD)
                 elif y_i <= -BOX_LENGTH/2:
-                    drone.V.setSphereCap(phi_center=-np.pi/2, theta_center=0., alpha=BLACKEN_V_FIELD)
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(-np.pi/2-psi_i), theta_center=0., alpha=BLACKEN_V_FIELD)
                 
+            if USE_BOUNDARY_BOX or USE_BOUNDARY_BOX_ONLY_Z:
                 if z_i >= BOX_HEIGHT+BOX_DIST_FROM_GROUND:
-                    drone.V.setSphereCap(phi_center=0., theta_center=np.pi/2, alpha=BLACKEN_V_FIELD)
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(0.-psi_i), theta_center=np.pi/2, alpha=BLACKEN_V_FIELD)
                 elif z_i <= BOX_DIST_FROM_GROUND:
-                    drone.V.setSphereCap(phi_center=0., theta_center=-np.pi/2, alpha=BLACKEN_V_FIELD)
-    
+                    drone.V.setSphereCap(phi_center=psi_to_bounds(0.-psi_i), theta_center=-np.pi/2, alpha=BLACKEN_V_FIELD)
+            
     def updateDronesPosition(self):
         for drone in self.drones:
             drone.updatePositon()
@@ -468,6 +582,7 @@ class simulation:
                 dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_gpu()
             else:
                 dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu()
+                # dvel, dpsi, dv_z = drone.compute_state_variables_3d_on_cpu_no_sincos()
             # print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}")
 
             # start_time = time.time()
@@ -486,6 +601,7 @@ class simulation:
 
 
             drone.updateVelocity(dvel, dpsi, dv_z)
+        # print(self.drones[0].velocity, self.drones[0].psi)
 
     def getAllVel(self):
         velocities = np.empty((self.N_DRONES, 3)) 
@@ -511,15 +627,18 @@ class simulation:
 
         now_observed_min_dist = float('inf')
 
-        avgDist = 0.
+        avgDist = 0. #of all drones
 
         for i in range(n):
             min_dist = float('inf')  # Start with a large number
+            avgDist_one_drone = 0.
             for j in range(n):
                 if i != j:  # Skip the same point
                     dist = math.sqrt((x[i] - x[j])**2 + (y[i] - y[j])**2 + (z[i] - z[j])**2)
-                    avgDist += dist
+                    avgDist_one_drone += dist
                     min_dist = min(min_dist, dist)
+            avgDist_one_drone /= (n-1)
+            avgDist += avgDist_one_drone
             now_observed_min_dist = min(now_observed_min_dist, min_dist)
             min_distances[i] = min_dist
         self.minDist = min(self.minDist, now_observed_min_dist)
@@ -527,6 +646,7 @@ class simulation:
         self.cntMinDist += n
 
         avgDist /= n
+
 
         self.polarization = (self.polarization*self.counter + self.calcPol())/(self.counter+1)
         self.avgDist = (self.avgDist*self.counter + avgDist)/(self.counter+1)
@@ -713,8 +833,10 @@ class VisualField:
         alpha - angle from the center of the cap to the edge of the cap
         """
         if self.simple_V_Field:
+            print(phi_center, theta_center, alpha)
             theta_min = self.thetaToRow(self.thetaToRange(theta_center-alpha))
             theta_max = self.thetaToRow(self.thetaToRange(theta_center+alpha))
+            # print(theta_min, theta_max)
             if theta_min==0 or theta_max==self.theta_size-1:
                 phi_min = 0
                 phi_max = self.phi_size-1
@@ -727,6 +849,11 @@ class VisualField:
             else:
                 self.field[theta_min:theta_max, phi_min:self.phi_size-1] = 1
                 self.field[theta_min:theta_max, 0:phi_max] = 1
+            
+            print("theta_min: ", theta_min)
+            print("theta_max: ", theta_max)
+            print("phi_min: ", phi_min)
+            print("phi_max: ", phi_max)
             return
 
         x_center, y_center, z_center = self.sphericalToCartesian(self.phiShift(phi_center), self.thetaShift(theta_center))
@@ -815,7 +942,8 @@ def test(x, y, z):
     drone1.V.plotVisualField()
 
 def test_wat_dronedoin():
-    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=1, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=5, lam0=1)
+    # sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=1, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=5, lam0=1)
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=1., lam0=1)
 
     sim.drones[0].V.setSphereCap(phi_center=0., theta_center=0., alpha=BLACKEN_V_FIELD)
     dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
@@ -830,7 +958,7 @@ def test_wat_dronedoin():
     dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
     print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone")
     dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
-    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front of the drone gpu")
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone gpu")
     sim.drones[0].V.plotVisualField()
     input()
     sim.drones[0].V.setZero()
@@ -871,20 +999,157 @@ def test_wat_dronedoin():
     input()
     sim.drones[0].V.setZero()
 
+def test_wat_dronedoin2():
+    # sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=1, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=5, lam0=1)
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=1., lam0=1)
+    
+    print("drone psi is: ", sim.drones[0].psi)
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(3, 0, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front of the drone 3m ")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(10, 0, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(-3, 0, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone 3m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(-10, 0, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the back of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(0, 3, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the left of the drone 3m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the left of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(0, 10, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the left of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the left of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(0, -3, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the right of the drone 3m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the right of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(0, -10, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the right of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the right of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(3, 3, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left of the drone 3m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(10, 10, 0)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(3, 3, 3)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left-up of the drone 3m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left-up of the drone gpu 3m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+    sim.drones[0].updateVFieldBasedOnDroneCoords(10, 10, 10)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left-up of the drone 10m")
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the front-left-up of the drone gpu 10m")
+    sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
+
+def test_boundary_box():
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=10., lam0=1)
+    # print("drone psi is: ", sim.drones[0].psi)
+    sim.simulate()
+    sim.updateVFieldForDrones()
+    sim.drones[0].V.plotVisualField()
+
+def test3():
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=0.5, bet0=1., lam0=2.0)
+    sim.drones[0].V.setSphereCap(phi_center=0., theta_center=np.pi/2, alpha=BLACKEN_V_FIELD)
+    dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_cpu()
+    print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the up of the drone")
+    # dvel, dpsi, dv_z = sim.drones[0].compute_state_variables_3d_on_gpu()
+    # print(f"dvel: {dvel:.5f}, dpsi: {dpsi:.5f}, dvz: {dv_z:.5f}, for the up of the drone gpu")
+    # sim.drones[0].V.plotVisualField()
+    input()
+    sim.drones[0].V.setZero()
 
 if __name__ == "__main__":
-    # test_wat_dronedoin()
+    # test3()
+    # test_wat_dronedoin2()
+    test_wat_dronedoin()
     # print(BOX_WIDTH/2, BOX_LENGTH/2, BOX_HEIGHT+BOX_DIST_FROM_GROUND, BOX_DIST_FROM_GROUND)
-    # exit()
+    # test_boundary_box()
+    exit()
 
 
-    alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
-    bet0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
+    alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10] # not that great because for low values drones just fly apart
+    bet0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10] 
     lam0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
 
-    # sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=2., bet0=5, lam0=1)
-    # sim.simulate()
-    # exit()
+    # alp0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
+    # bet0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
+    # lam0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=0.5, bet0=1., lam0=2.0)
+    sim.simulate()
+    exit()
 
     combinations = list(itertools.product(alp0, bet0, lam0))
     for alpha, beta, lam in tqdm(combinations):

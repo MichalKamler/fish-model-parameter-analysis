@@ -15,7 +15,7 @@ def loadCsvData():
     minDist, avgMinDist, polarization, avgDist = [], [], [], []
 
     # Open and read the CSV file
-    with open('data_see_only_under_10.csv', 'r') as file:
+    with open('data.csv', 'r') as file:
         reader = csv.reader(file)
         for row in reader:
             # Convert the data from strings to floats
@@ -36,7 +36,7 @@ def loadCsvData():
 
     return ALP0, BET0, LAM0, minDist, avgMinDist, polarization, avgDist
 
-def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_limit=None):
+def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_limit=None, lower_limit=None):
     # Ensure inputs are numpy arrays for easy manipulation
     root = os.getcwd()
 
@@ -64,7 +64,7 @@ def makeHeatMap(ALP0, BET0, LAM0, data, dataName, label_for_indicator, upper_lim
             mask = (ALP0 == alp) & (BET0 == bet)
             if mask.any():
                 value = data[mask][0]
-                if (upper_limit is not None and value > upper_limit) or value is None:  # **Check upper limit**
+                if (upper_limit is not None and value > upper_limit) or (lower_limit is not None and value < lower_limit) or value is None:  # **Check upper limit**
                     mask_invalid[j, i] = True  # **Mark as invalid**
                 else:
                     heatmap[j, i] = value
@@ -103,9 +103,15 @@ def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist, b
     side_len_b = 10
     grid_size = side_len_a * side_len_b
 
-    minDistAllowed = 10.
-    avgMinDistAllowed = 30.
-    avgDistAllowed = 100.
+    minDistAllowed_up = 10.
+    minDistAllowed_low = 3.
+    avgMinDistAllowed_up = 10.
+    avgMinDistAllowed_min = 3.
+    avgDistAllowed = 25.
+
+    for i in range(len(avgDist)):
+        avgDist[i] /= 10
+
 
 
 
@@ -119,8 +125,8 @@ def saveHeatMaps(LAM0, ALP0, BET0, minDist, avgMinDist, polarization, avgDist, b
 
 
     for i in range(0, len(LAM0)//grid_size):
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], minDist[i*grid_size:(i+1)*grid_size], "minimal observed distance", "Distance [BL]", minDistAllowed)
-        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgMinDist[i*grid_size:(i+1)*grid_size], "average minimal observed distance", "Distance [BL]", avgMinDistAllowed)
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], minDist[i*grid_size:(i+1)*grid_size], "minimal observed distance", "Distance [BL]", minDistAllowed_up, minDistAllowed_low)
+        makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgMinDist[i*grid_size:(i+1)*grid_size], "average minimal observed distance", "Distance [BL]", avgMinDistAllowed_up, avgMinDistAllowed_min)
         makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], polarization[i*grid_size:(i+1)*grid_size], " polarization", "Polarization []")
         makeHeatMap(ALP0[i*grid_size:(i+1)*grid_size], BET0[i*grid_size:(i+1)*grid_size], LAM0[i*grid_size:(i+1)*grid_size][0], avgDist[i*grid_size:(i+1)*grid_size], " avgDist", "avgDist [BL]", avgDistAllowed)
 
