@@ -8,6 +8,8 @@ import itertools
 from tqdm import tqdm
 import csv
 from numba import cuda, float32
+from dask import delayed, compute
+
 
 
 import matplotlib.pyplot as plt
@@ -23,7 +25,7 @@ LAM0 = 1.0
 LAM1_LR = 0.0
 LAM1_UD = 0.16
 
-SIM_RATE = 5 #Hz
+SIM_RATE = 20 #Hz
 
 # PHI_SIZE = 1024
 PHI_SIZE = 256
@@ -492,14 +494,14 @@ class simulation:
     def spawn_drones(self, n_drones) -> list:
         drones_list = []
         for i in range(n_drones):
-            # x = i*3
-            # y = random.uniform(-3, 3)
-            # z = random.uniform(0, 5)
-            # psi = np.random.uniform(-np.pi, np.pi)
-            x = 0
-            y = 0 #TESTING NOW
-            z = 0
-            psi = 0
+            x = i*3
+            y = random.uniform(-3, 3)
+            z = random.uniform(0, 5)
+            psi = np.random.uniform(-np.pi, np.pi)
+            # x = 0
+            # y = 0 #TESTING NOW
+            # z = 0
+            # psi = 0
             drones_list.append(drone(x, y, z, psi, 
                     PHI_SIZE, THETA_SIZE,
                     GAM, V0, R, SIM_RATE,
@@ -691,6 +693,11 @@ class simulation:
             #     print("V_field of drone number: ", i)
             #     drone.V.plotVisualField()
 
+            if t>-60.:
+                self.drones[0].V.plotVisualField()
+                # time.sleep(30)
+                # exit()
+
             if self.SHOW:
                 self.updatePlotDrones()
             if t>=self.SIM_START_COLLECT_DATA:
@@ -698,10 +705,6 @@ class simulation:
         self.writeCsv()
                               
 class VisualField: 
-    """
-    spherical representation of the visual field as a rows x cols -> theta x phi discretization
-    
-    """
     def __init__(self, phi_size: int, theta_size: int, simplet_V_field: bool =False) -> None:
         self.field = np.zeros((theta_size, phi_size), dtype=np.float32)
         self.theta_size = theta_size #rows
@@ -833,7 +836,7 @@ class VisualField:
         alpha - angle from the center of the cap to the edge of the cap
         """
         if self.simple_V_Field:
-            print(phi_center, theta_center, alpha)
+            # print(phi_center, theta_center, alpha)
             theta_min = self.thetaToRow(self.thetaToRange(theta_center-alpha))
             theta_max = self.thetaToRow(self.thetaToRange(theta_center+alpha))
             # print(theta_min, theta_max)
@@ -850,10 +853,10 @@ class VisualField:
                 self.field[theta_min:theta_max, phi_min:self.phi_size-1] = 1
                 self.field[theta_min:theta_max, 0:phi_max] = 1
             
-            print("theta_min: ", theta_min)
-            print("theta_max: ", theta_max)
-            print("phi_min: ", phi_min)
-            print("phi_max: ", phi_max)
+            # print("theta_min: ", theta_min)
+            # print("theta_max: ", theta_max)
+            # print("phi_min: ", phi_min)
+            # print("phi_max: ", phi_max)
             return
 
         x_center, y_center, z_center = self.sphericalToCartesian(self.phiShift(phi_center), self.thetaShift(theta_center))
@@ -1131,27 +1134,73 @@ def test3():
     input()
     sim.drones[0].V.setZero()
 
+
+def loadCsvData():
+
+    # Initialize the lists to hold data
+    ALP0, ALP1_LR, ALP1_UD = [], [], []
+    BET0, BET1_LR, BET1_UD = [], [], []
+    LAM0, LAM1_LR, LAM1_UD = [], [], []
+    minDist, avgMinDist, polarization, avgDist = [], [], [], []
+
+    # Open and read the CSV file
+    with open('data.csv', 'r') as file:
+        reader = csv.reader(file)
+        for row in reader:
+            # Convert the data from strings to floats
+            values = list(map(float, row))
+            ALP0.append(values[0])
+            ALP1_LR.append(values[1])
+            ALP1_UD.append(values[2])
+            BET0.append(values[3])
+            BET1_LR.append(values[4])
+            BET1_UD.append(values[5])
+            LAM0.append(values[6])
+            LAM1_LR.append(values[7])
+            LAM1_UD.append(values[8])
+            minDist.append(values[9])
+            avgMinDist.append(values[10])
+            polarization.append(values[11])
+            avgDist.append(values[12])
+    
+    return ALP0, BET0, LAM0, minDist, avgMinDist, polarization, avgDist
+
+
+
+@delayed
+def run_simulation(alpha, beta, lam):
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=False, alp0=alpha, bet0=beta, lam0=lam)
+    sim.simulate()
+
 if __name__ == "__main__":
     # test3()
     # test_wat_dronedoin2()
-    test_wat_dronedoin()
+    # test_wat_dronedoin()
     # print(BOX_WIDTH/2, BOX_LENGTH/2, BOX_HEIGHT+BOX_DIST_FROM_GROUND, BOX_DIST_FROM_GROUND)
     # test_boundary_box()
-    exit()
+    # exit()
 
 
-    alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10] # not that great because for low values drones just fly apart
+    alp0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10] 
     bet0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10] 
     lam0 = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
 
     # alp0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
     # bet0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
     # lam0 = [0.1, 0.2, 0.5, 0.75, 1, 2, 5, 7.5, 10, 15]
-    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=0.5, bet0=1., lam0=2.0)
+    sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=True, alp0=10., bet0=10., lam0=2.0)
     sim.simulate()
     exit()
 
+    alp0_measured, bet0_measured, lam0_measured, minDist, avgMinDist, polarization, avgDist = loadCsvData()
+
+    measured_combinations = []
+    for i in range(len(alp0_measured)):
+        measured_combinations.append([alp0_measured[i], bet0_measured[i], lam0_measured[i]])
+    
     combinations = list(itertools.product(alp0, bet0, lam0))
+    combinations = [comb for comb in combinations if list(comb) not in measured_combinations]
+
     for alpha, beta, lam in tqdm(combinations):
         sim = simulation(SIM_RATE=SIM_RATE, N_DRONES=10, SIM_TIME=SIM_TIME, SIM_START_COLLECT_DATA=SIM_START_COLLECT_DATA, SHOW=False, alp0=alpha, bet0=beta, lam0=lam)
         sim.simulate()
